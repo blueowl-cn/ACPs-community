@@ -1,0 +1,20 @@
+[flake8]
+# 排除的目录和文件
+exclude =
+    venv,
+    .git,
+    __pycache__,
+    .pytest_cache,
+    htmlcov
+
+# 忽略特定目录的特定错误
+#per-file-ignores =
+#    alembic/env.py:F403,F401,E402
+#    alembic/versions/*.py:F403,F401,E402
+
+# 最大行长度
+max-line-length = 120
+# 忽略的错误代码：
+# E203: whitespace before ':'
+# W503: line break before binary operator
+ignore = E203,W503

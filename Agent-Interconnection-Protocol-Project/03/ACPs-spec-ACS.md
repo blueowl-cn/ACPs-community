@@ -1,0 +1,765 @@
+[首页](../README.md)
+
+ACS：智能体能力描述（ACPs-spec-ACS-v01.00）
+
+# 1. 文档定义
+
+本文档为支持智能体互联的 ACPs 智能体协作协议体系中的智能体能力描述（Agent Capability Specification，ACS）标准定义，版本号 v01.00。
+
+文档全称为 ACPs-spec-ACS-v01.00。
+
+文档编写者：禹可（北京邮电大学），刘军（北京邮电大学），李珂（北京邮电大学），郭小练（北京邮电大学），李胤铭（北京邮电大学），宋昊哲（北京邮电大学），胡晓峰（北京邮电大学），马镝（北京邮电大学）。
+
+# 2. 智能体能力描述介绍及相关流程
+
+智能体互联要能成为一个安全可靠的智能体系统，需要具备的一个重要能力是支持智能体描述自身的能力并进行保存和支持获取。智能体能力描述方式既要保证一定的规范性以便于智能体之间互联互通，也需要具备一定的灵活性以适应基于大模型的智能体复杂能力表述。为达到以上目标，我们在本文档中定义智能体能力描述（Agent Capability Specification，ACS）规范。
+
+每个智能体应为自己生成一个 ACS，并在智能体注册服务商（Agent Registration Service Provider，ARSP）登记。智能体注册服务商可以将智能体登记的 ACS 提供给其他智能体以支持智能体能力查询。智能体登记和获取 ACS 的流程如下图所示。
+
+![3-1.png](3-1.png)
+
+注：除以上通过 ARSP 获取 ACS 外，智能体也可以将自己的 ACS 文件放置于自身服务访问地址下，以 Well Known 的方式支持其他使用者直接获取，例如`https://agent.example.com/agent_spec.json`. 不过需要特别指出的是，使用者采用该方式获取智能体能力描述，是一种不安全的方式，我们更建议通过 ARSP 方式获取。
+
+# 3. 智能体能力描述定义
+
+ACPs 的智能体能力描述定义（ACS）采用 JSON 格式表述，定义格式具体如下：
+
+## 3.1. AgentCapabilitySpec 核心对象
+
+```typescript
+/**
+ * 智能体能力描述规范的根对象。
+ * 这是ACS（Agent Capability Specification）的核心数据结构，
+ * 完整描述了智能体的身份信息、功能能力、技术特性和服务接口。
+ * 用于智能体的注册、发现、匹配和协作。
+ */
+
+export interface AgentCapabilitySpec {
+  /**
+   * 智能体唯一身份标识符，由注册服务分配。
+   *
+   * @TJS-examples ["10001000011K912345E789ABCDEF2353"]
+   */
+  aic: string;
+
+  /**
+   * 智能体的激活状态，由注册服务维护。
+   *
+   * @TJS-examples [true, false]
+   */
+  active: boolean;
+
+  /**
+   * 智能体能力描述的最后修改时间，由注册服务提供。
+   * 采用ISO 8601格式，包含时区偏移信息，推荐使用北京时间（UTC+8）。
+   *
+   * @TJS-examples ["2025-03-15T16:30:00+08:00"]
+   */
+  lastModifiedTime: string;
+
+  /**
+   * 此智能体支持的ACPs协议版本，用于协议兼容性检查和版本匹配。
+   *
+   * @TJS-examples ["01.00"]
+   */
+  protocolVersion: string;
+
+  /**
+   * 此智能体的名称，简洁明了地描述智能体的主要功能。
+   *
+   * @TJS-examples ["北京城区旅游规划助手", "北京郊区景点推荐代理", "文化导览专家"]
+   */
+  name: string;
+
+  /**
+   * 此智能体的详细描述，帮助用户和其他智能体理解其用途和限制。
+   * 应明确说明智能体能做什么和不能做什么，包括地理范围、服务类型等限制。
+   *
+   * @TJS-examples ["对北京城区旅游的规划和建议。只负责城六区，不负责郊区。北京城区范围旅游景点探索规划代理，专门负责北京城六区（东城/西城/朝阳/海淀/丰台/石景山）的旅游景点推荐和行程规划。拒绝超出城区范围的请求。", "专注于北京郊区（密云/怀柔/延庆/昌平/门头沟/房山/大兴/顺义/平谷/通州）的旅游景点推荐和自然路线规划。拒绝城区范围的请求。"]
+   */
+  description: string;
+
+  /**
+   * 智能体的版本号，智能体提供者自行定义格式。
+   * 推荐遵循语义化版本控制规范（Semantic Versioning）。
+   * 格式：MAJOR.MINOR.PATCH，当API不兼容时递增MAJOR版本。
+   *
+   * @TJS-examples ["1.0.0", "2.1.3", "1.2.0-beta.1"]
+   */
+  version: string;
+
+  /**
+   * 智能体图标的URL地址，用于在用户界面中显示智能体标识。
+   *
+   * @TJS-examples ["https://example.com/icons/beijing-agent.png", "https://cdn.example.com/agents/tour-guide.svg"]
+   */
+  iconUrl?: string;
+
+  /**
+   * 智能体详细文档的URL地址，提供使用说明和API文档。
+   *
+   * @TJS-examples ["https://docs.example.com/agents/beijing-tour", "https://github.example.com/org/agent/blob/main/README.md"]
+   */
+  documentationUrl?: string;
+
+  /**
+   * 智能体能力展示的Web应用URL，用户可以通过此地址体验智能体功能。
+   *
+   * @TJS-examples ["https://demo.example.com/beijing-tour", "https://app.example.com/agents/tour-guide"]
+   */
+  webAppUrl?: string;
+
+  /**
+   * 智能体服务提供者的详细信息，包括组织、联系方式等。
+   *
+   * @TJS-examples [{"organization": "北京邮电大学", "url": "https://ai.bupt.edu.cn", "license": "京ICP备14033833号-1"}]
+   */
+  provider: AgentProvider;
+
+  /**
+   * 用于授权请求的可用安全方案声明。键是方案名称，值是对应的安全方案配置。
+   * 遵循 OpenAPI 3.0 安全方案对象规范。智能体可以声明支持多种安全方案，
+   * 在实际调用时根据端点的security配置选择合适的认证方式。
+   *
+   * 本字段通常不为空。
+   * 作为Partner的智能体通常作为mutualTLS的服务器端对外提供服务，所以需要定义相应的安全方案。
+   * 作为Leader的智能体通常作为mutualTLS的客户端去连接其它的Partner智能体，所以也需要定义相应的安全方案。
+   *
+   * 目前支持的方案包括：
+   * - mutualTLS: 双向TLS认证，适用于智能体间的高安全级别通信
+   * - openIdConnect: OpenID Connect认证，适用于用户身份验证场景
+   *
+   * @TJS-examples [
+   *   {
+   *     "mtls": {
+   *       "type": "mutualTLS",
+   *       "description": "智能体间mTLS双向认证",
+   *       "x-caChallengeBaseUrl": "https://ca.example.com/challenge"
+   *     },
+   *     "oidc": {
+   *       "type": "openIdConnect",
+   *       "description": "用户身份认证",
+   *       "openIdConnectUrl": "https://auth.example.com/.well-known/openid-configuration"
+   *     }
+   *   }
+   * ]
+   */
+  securitySchemes: { [scheme: string]: SecurityScheme };
+
+  /**
+   * 智能体端点配置列表，定义智能体可访问的服务端点信息。
+   * 每个端点包含URL、传输协议和安全要求。
+   * 多个端点应该支持相同的业务功能，支持不同的协议和认证方式，以满足多样化的访问需求。
+   *
+   * 本字段为空数组，表示本智能体没有提供服务端点给其它智能体使用。这样的智能体通常是面向最终用户的助手类智能体。
+   *
+   * @TJS-examples [[{"url": "https://api.example.com/acps-v1", "transport": "JSONRPC", "security": [{"mtls": []}]}]]
+   */
+  endPoints: AgentEndPoint[];
+
+  /**
+   * 智能体支持的可选能力声明，如流式响应、异步通知、消息队列等。
+   *
+   * @TJS-examples [{"streaming": true, "notification": false, "messageQueue": ["mqtt:5.0", "kafka:3.0"]}, {"streaming": false, "notification": true, "messageQueue": []}]
+   */
+  capabilities: AgentCapabilities;
+
+  /**
+   * 所有技能的默认支持输入MIME类型集合，可在每个技能的基础上覆盖。
+   * 定义智能体可以接受的输入数据格式。
+   *
+   * @TJS-examples [["text/plain", "application/json"], ["text/plain", "image/jpeg", "audio/wav"]]
+   */
+  defaultInputModes: string[];
+
+  /**
+   * 所有技能的默认支持输出MIME类型集合，可在每个技能的基础上覆盖。
+   * 定义智能体可以生成的输出数据格式。
+   *
+   * @TJS-examples [["text/plain", "application/json"], ["text/markdown", "application/json", "image/png"]]
+   */
+  defaultOutputModes: string[];
+
+  /**
+   * 智能体可以执行的技能或独特能力集合，每个技能代表一个专门化的功能模块。
+   *
+   * 本字段为空数组，表示本智能体没有定义任何技能。这样的智能体通常是面向最终用户的助手类智能体。
+   *
+   * @TJS-examples [[{"id": "beijing-tour/sight-recommender", "name": "景点推荐", "version": "1.0.0", "tags": ["旅游", "北京"]}]]
+   */
+  skills: AgentSkill[];
+}
+```
+
+## 3.2. AgentProvider 对象
+
+```typescript
+/**
+ * 智能体服务提供者信息对象。
+ * 定义智能体的开发和维护组织信息，包括组织身份、联系方式和合规资质。
+ * 用于建立信任关系和提供技术支持联系渠道。
+ */
+export interface AgentProvider {
+  /**
+   * 智能体提供者的国家或地区代码。符合ISO 3166-1 alpha-2标准。
+   *
+   * @default "CN"
+   * @TJS-examples ["CN", "US", "GB"]
+   */
+  countryCode?: string;
+
+  /**
+   * 智能体提供者的组织名称，通常为公司、大学或研究机构等顶级组织。
+   *
+   * @TJS-examples ["北京邮电大学"]
+   */
+  organization: string;
+
+  /**
+   * 智能体提供者的具体部门或院系名称，提供更精确的组织结构信息。
+   *
+   * @TJS-examples ["人工智能学院"]
+   */
+  department?: string;
+
+  /**
+   * 智能体提供者的官方网站或相关文档的URL地址。
+   *
+   * @TJS-examples ["https://ai.bupt.edu.cn"]
+   */
+  url: string;
+
+  /**
+   * 智能体提供者的法律备案信息或许可证号，用于合规性验证。
+   * 通常为URL对应网站的ICP备案号或其他相关资质证明。
+   *
+   * @TJS-examples ["京ICP备14033833号-1"]
+   */
+  license: string;
+}
+```
+
+## 3.3. AgentCapabilities 对象
+
+```typescript
+/**
+ * 消息队列协议版本枚举类型。
+ * 定义智能体支持的各种消息队列中间件及其具体版本，
+ * 用于异步消息传递、事件通知和分布式系统集成。
+ * 使用"protocol:version"格式提供精确的技术栈定义。
+ *
+ * @TJS-examples ["mqtt:5.0", "kafka:3.1", "redis:7.2"]
+ */
+export type MQProtocolVersion =
+  // MQTT 版本
+  | "mqtt:3.1.1"
+  | "mqtt:5.0"
+  // AMQP 版本
+  | "amqp:0.9.1"
+  | "amqp:1.0"
+  // Kafka 版本
+  | "kafka:2.8"
+  | "kafka:3.0"
+  | "kafka:3.1"
+  // Redis 版本
+  | "redis:6.0"
+  | "redis:7.0"
+  | "redis:7.2"
+  // RabbitMQ 版本
+  | "rabbitmq:3.9"
+  | "rabbitmq:3.10"
+  | "rabbitmq:3.11";
+
+/**
+ * 智能体可选技术能力配置对象。
+ * 定义智能体支持的高级功能特性，如实时通信、异步通知和消息队列集成。
+ * 这些能力为智能体提供更丰富的交互方式和更强的扩展性。
+ */
+export interface AgentCapabilities {
+  /**
+   * 智能体是否支持Server Send Event（SSE）用于流式响应。
+   * 启用后可以实现实时数据推送和渐进式内容生成。
+   *
+   * @TJS-examples [true, false]
+   */
+  streaming: boolean;
+
+  /**
+   * 智能体是否支持异步推送通知。
+   * 启用后可以主动向指定URL推送事件和状态更新。
+   *
+   * @TJS-examples [true, false]
+   */
+  notification: boolean;
+
+  /**
+   * 智能体支持的消息队列能力配置。使用协议版本字符串数组进行配置。
+   * 支持多种消息队列协议，用于异步消息传递和事件通知。
+   * 空数组表示不支持任何消息队列协议。
+   *
+   * @TJS-examples [["mqtt:5.0", "amqp:0.9.1", "kafka:3.0"], ["redis:7.2", "rabbitmq:3.11"], []]
+   */
+  messageQueue: MQProtocolVersion[];
+}
+```
+
+## 3.4. SecurityScheme 对象
+
+```typescript
+/**
+ * 定义可用于保护智能体端点的安全方案。
+ * 这是基于 OpenAPI 3.0 安全方案对象的判别联合类型。
+ *
+ * @see {@link https://swagger.io/specification/#security-scheme-object}
+ *
+ * 本文暂时只支持 MutualTLS 和 OpenIdConnect 两种方案。
+ */
+export type SecurityScheme =
+  | APIKeySecurityScheme
+  | HTTPAuthSecurityScheme
+  | OAuth2SecurityScheme
+  | OpenIdConnectSecurityScheme
+  | MutualTLSSecurityScheme;
+
+/**
+ * 双向TLS认证安全方案，用于智能体间的高安全级别通信。
+ * 要求客户端和服务端都提供有效的证书进行相互验证。
+ */
+export interface MutualTLSSecurityScheme {
+  /**
+   * 安全方案类型，固定为"mutualTLS"。
+   *
+   * @TJS-examples ["mutualTLS"]
+   */
+  type: "mutualTLS";
+
+  /**
+   * 安全方案的描述信息，说明该方案的用途和特点。
+   *
+   * @TJS-examples ["双向TLS认证，确保客户端和服务端身份可信", "智能体间高安全级别通信认证"]
+   */
+  description?: string;
+
+  /**
+   * 自定义扩展字段，用于Agent证书挑战验证的基础URL配置。
+   * 遵循OpenAPI 3.0扩展字段命名规范（以"x-"开头，使用camelCase）。
+   *
+   * @TJS-examples ["https://certs.example.com/agent-challenge", "https://ca.example.com/challenge/v1"]
+   */
+  "x-caChallengeBaseUrl": string;
+}
+
+/**
+ * OpenID Connect认证安全方案，基于OAuth 2.0协议的身份认证层。
+ * 提供标准化的身份验证和用户信息获取能力。
+ */
+export interface OpenIdConnectSecurityScheme {
+  /**
+   * 安全方案类型，固定为"openIdConnect"。
+   *
+   * @TJS-examples ["openIdConnect"]
+   */
+  type: "openIdConnect";
+
+  /**
+   * 安全方案的描述信息，说明该OIDC方案的用途和特点。
+   *
+   * @TJS-examples ["基于OpenID Connect的统一身份认证", "支持多身份提供商的用户认证"]
+   */
+  description?: string;
+
+  /**
+   * OpenID Connect发现文档的URL，用于自动发现认证端点和配置信息。
+   * 客户端可通过此URL获取授权服务器的元数据和端点信息。
+   *
+   * @TJS-examples ["https://auth.example.com/.well-known/openid-configuration", "https://accounts.google.com/.well-known/openid-configuration", "https://login.microsoftonline.com/common/.well-known/openid-configuration"]
+   */
+  openIdConnectUrl: string;
+}
+```
+
+## 3.5. AgentEndPoint 对象
+
+```typescript
+/**
+ * 智能体服务端点配置对象。
+ * 定义智能体对外提供服务的网络访问点，包括访问地址、
+ * 传输协议和安全认证要求。支持多端点配置以实现不同的服务模式。
+ */
+export interface AgentEndPoint {
+  /**
+   * 此端点的完整URL地址。根据传输协议类型，URL的含义有所不同：
+   *
+   * JSONRPC: 固定的RPC端点URL，所有RPC调用都发送到此地址
+   * HTTP_JSON: API的Base URL，实际调用时会在此基础上拼接具体的API路径
+   *
+   * 示例：
+   * - JSONRPC: "https://api.example.com/rpc" (固定端点)
+   * - HTTP_JSON: "https://api.example.com/v1" (基础URL，实际调用如 /v1/skills/search)
+   *
+   * @TJS-examples ["https://api.example.com/rpc", "https://api.example.com/v1", "https://beijing-agent.example.com/api/v2"]
+   */
+  url: string;
+
+  /**
+   * 此端点支持的传输协议类型。不同协议有不同的调用方式和URL解释：
+   *
+   * JSONRPC: 基于JSON-RPC 2.0协议的远程过程调用
+   * HTTP_JSON: 基于HTTP的JSON请求/响应，RESTful风格的API调用
+   *
+   * @TJS-examples ["JSONRPC", "HTTP_JSON"]
+   */
+  transport: string;
+
+  /**
+   * 适用于此端点的安全要求配置列表。定义了调用此端点时必须满足的认证要求。
+   * 遵循 OpenAPI 3.0 安全要求对象规范。
+   *
+   * 数组结构说明：
+   * - 外层数组表示 "OR" 关系：满足任意一个安全要求组合即可
+   * - 内层对象表示 "AND" 关系：同一对象内的所有方案都必须满足
+   * - 键名必须与 securitySchemes 中定义的方案名称一致
+   * - 值数组表示所需的权限范围（scopes），对于某些方案可以为空数组
+   *
+   * 常见配置模式：
+   * 1. 单一认证：[{"mtls": []}] - 仅需要mTLS认证
+   * 2. 多选一：[{"mtls": []}, {"oidc": ["read"]}] - mTLS或OIDC任选其一
+   * 3. 组合认证：[{"mtls": [], "oidc": ["profile"]}] - 同时需要mTLS和OIDC
+   *
+   * @TJS-examples [
+   *   [{"mtls": []}],
+   *   [{"mtls": []}, {"oidc": ["openid", "profile"]}],
+   *   [{"mtls": [], "oidc": ["read"]}, {"oidc": ["admin"]}]
+   * ]
+   */
+  security?: { [scheme: string]: string[] }[];
+}
+```
+
+## 3.6. AgentSkill 对象
+
+```typescript
+/**
+ * 表示智能体可以执行的某方面的独特能力或功能。
+ * 每个技能代表智能体的一个专门化能力，具有明确的功能边界和输入输出规范。
+ */
+export interface AgentSkill {
+  /**
+   * 智能体技能的唯一标识符。由提供者定义，建议使用分层命名空间格式。
+   *
+   * 推荐的命名空间方案：
+   * 1. 点分层格式：{agent-domain}.{skill-category}.{specific-skill}
+   * 2. 冒号分层格式：{agent-domain}:{skill-category}:{specific-skill}
+   *·
+   * @TJS-examples ["beijing-urban-tour.sight-recommender", "beijing-urban-tour:itinerary-planner"]
+   */
+  id: string;
+  /**
+   * 技能的名称，简洁明了地描述技能的主要功能。
+   *
+   * @TJS-examples ["北京城区旅游景点推荐", "北京城区行程规划", "文化体验优化"]
+   * */
+  name: string;
+  /**
+   * 技能的详细描述，帮助客户端或用户理解其目的、功能范围和限制。
+   * 应明确说明技能能做什么和不能做什么，包括地理范围、服务类型等限制。
+   *
+   * @TJS-examples ["根据客户需求推荐北京城六区（东城/西城/朝阳/海淀/丰台/石景山）内的旅游景点，提供文化深度体验建议。拒绝郊区景点推荐请求，如八达岭长城、古北水镇等。", "为北京城区游客提供个性化行程规划，基于文化匹配度、交通便捷度和预算进行优化，支持亲子游、文化深度游等不同需求场景。"]
+   */
+  description: string;
+  /**
+   * 技能的版本号，由智能体提供者自行定义格式。
+   * 建议遵循语义化版本控制规范（Semantic Versioning）。
+   * 格式：MAJOR.MINOR.PATCH，当API不兼容时递增MAJOR版本。
+   *
+   * @TJS-examples ["1.0.0", "2.1.3", "1.2.0-beta.1"]
+   */
+  version: string;
+
+  /**
+   * 描述技能能力特征的关键词集合，用于技能发现和匹配。
+   * 包括功能类型、地域范围、专业领域、目标用户等维度的标签。
+   *
+   * @TJS-examples [["旅游", "景点推荐", "北京", "城区", "文化体验", "行程规划"], ["博物馆", "历史文化", "亲子游", "深度游", "交通便捷"]]
+   */
+  tags: string[];
+  /**
+   * 此技能可以处理的示例提示或场景，帮助用户理解如何使用该技能。
+   * 提供具体的用户输入示例和期望的处理场景。
+   *
+   * @TJS-examples [["推荐几个适合带小孩的北京城区景点", "不要太累的故宫周边一日游安排", "朝阳区有什么文化体验好的地方", "预算500元的海淀区半日游"], ["我想深度了解北京的历史文化", "安排一个周末的亲子游行程", "推荐几个交通便利的博物馆"]]
+   */
+  examples?: string[];
+  /**
+   * 此技能支持的输入 MIME 类型集合，覆盖智能体的默认值。
+   * 定义该技能可以接受的输入数据格式，如文本、图片、音频等。
+   *
+   * @TJS-examples [["text/plain", "application/json"], ["text/plain", "image/jpeg", "image/png"]]
+   */
+  inputModes?: string[];
+  /**
+   * 此技能支持的输出 MIME 类型集合，覆盖智能体的默认值。
+   * 定义该技能可以生成的输出数据格式，如文本、结构化数据、图片等。
+   *
+   * @TJS-examples [["text/plain", "application/json", "text/markdown"], ["text/plain", "application/json"]]
+   */
+  outputModes?: string[];
+}
+```
+
+# 4. 智能体能力描述示例
+
+以下提供两个智能体能力描述示例，用于理解上述定义格式。
+
+## 4.1. 北京城区旅游规划助手示例
+
+```json
+{
+  // 智能体身份信息。由注册服务分配和维护，不是由智能体提供者定义。
+  "aic": "10001000011K912345E789ABCDEF2353",
+  "active": true,
+  "lastModifiedTime": "2025-03-15T16:30:00+08:00",
+
+  // ACPs协议版本
+  "protocolVersion": "01.00",
+
+  // 智能体基本描述信息
+  "name": "北京城区旅游规划助手",
+  "description": "专门负责北京城六区（东城/西城/朝阳/海淀/丰台/石景山）的旅游景点推荐和行程规划。提供个性化旅游建议，支持亲子游、文化深度游、商务游等多种场景。拒绝超出城区范围的请求，如八达岭长城、古北水镇等郊区景点。",
+  "version": "1.2.0",
+
+  // 智能体附加信息
+  "iconUrl": "https://cdn.example.com/icons/urban-tour-planner.png",
+  "documentationUrl": "https://docs.example.com/urban-tour-planner",
+  "webAppUrl": "https://demo.example.com/urban-tour-planner",
+
+  // 智能体提供者信息
+  "provider": {
+    "organization": "北京邮电大学",
+    "department": "人工智能学院",
+    "url": "https://ai.bupt.edu.cn",
+    "license": "京ICP备14033833号-1"
+  },
+
+  // 安全方案定义
+  "securitySchemes": {
+    "mtls": {
+      "type": "mutualTLS",
+      "description": "智能体间mTLS双向认证，确保高安全级别通信",
+      "x-caChallengeBaseUrl": "https://ca.example.com/challenge"
+    },
+    "oidc": {
+      "type": "openIdConnect",
+      "description": "基于OpenID Connect的用户身份认证",
+      "openIdConnectUrl": "https://auth.example.com/.well-known/openid-configuration"
+    }
+  },
+
+  // 服务端点配置
+  "endPoints": [
+    {
+      "url": "https://api.example.com/urban-tour-planner/rpc",
+      "transport": "JSONRPC",
+      "security": [{ "mtls": [] }]
+    }
+  ],
+
+  // 技术能力声明
+  "capabilities": {
+    "streaming": true,
+    "notification": true,
+    "messageQueue": ["rabbitmq:3.11"]
+  },
+
+  // 默认输入输出格式
+  "defaultInputModes": ["text/plain", "application/json"],
+  "defaultOutputModes": ["text/plain", "application/json", "text/markdown"],
+
+  // 智能体技能列表
+  "skills": [
+    {
+      "id": "beijing-urban-tour.sight-recommender",
+      "name": "景点推荐",
+      "description": "根据用户需求推荐北京城六区内的旅游景点，提供详细的景点信息、开放时间、门票价格和文化背景介绍。支持按兴趣偏好、年龄群体、预算范围进行个性化推荐。",
+      "version": "1.2.0",
+      "tags": ["旅游", "景点推荐", "北京", "城区", "文化体验", "历史古迹"],
+      "examples": [
+        "推荐几个适合带小孩的北京城区景点",
+        "我想了解故宫周边有什么文化景点",
+        "朝阳区有什么现代艺术展馆",
+        "预算300元的海淀区景点推荐"
+      ],
+      "inputModes": ["text/plain", "application/json"],
+      "outputModes": ["text/plain", "application/json", "text/markdown"]
+    },
+    {
+      "id": "beijing-urban-tour.itinerary-planner",
+      "name": "行程规划",
+      "description": "为北京城区游客提供个性化行程规划服务，基于交通便捷度、游览时间、预算控制和兴趣匹配进行智能优化。支持半日游、一日游、多日游等不同时长的行程安排。",
+      "version": "1.1.0",
+      "tags": ["行程规划", "路线优化", "时间管理", "交通指南", "预算控制"],
+      "examples": [
+        "安排一个周末的故宫天安门一日游",
+        "3天2夜的北京文化深度游行程",
+        "半天时间逛完三里屯和国贸",
+        "预算1000元的情侣两日游安排"
+      ],
+      "inputModes": ["text/plain", "application/json"],
+      "outputModes": ["text/plain", "application/json", "text/markdown"]
+    },
+    {
+      "id": "beijing-urban-tour.transport-advisor",
+      "name": "交通指南",
+      "description": "提供北京城区内景点间的最优交通路线建议，包括地铁、公交、出租车、共享单车等多种交通方式的组合推荐。实时考虑交通状况和费用对比。",
+      "version": "1.0.0",
+      "tags": ["交通导航", "路线规划", "公共交通", "费用优化", "实时路况"],
+      "examples": [
+        "从故宫到颐和园怎么走最方便",
+        "天安门到三里屯的最省钱路线",
+        "晚高峰时段从国贸到西单的建议",
+        "适合老人的无障碍交通路线"
+      ]
+    }
+  ]
+}
+```
+
+## 4.2. 全国范围旅游助手示例
+
+```json
+{
+  "aic": "10001000011K920251018D8888JQKA91",
+  "active": true,
+  "lastModifiedTime": "2025-04-10T09:45:00+08:00",
+
+  "protocolVersion": "01.00",
+
+  "name": "全国范围旅游助手",
+  "description": "提供中国全国范围内的旅游信息服务和行程规划。覆盖全国34个省级行政区的主要旅游景点、特色文化、交通指南和住宿推荐。支持跨地区旅游路线规划，可协调其他地区专业智能体提供深度服务。",
+  "version": "2.1.0",
+
+  "iconUrl": "https://cdn.example.com/icons/national-tour-guide.png",
+  "documentationUrl": "https://docs.example.com/national-tour-guide",
+  "webAppUrl": "https://demo.example.com/national-tour-guide",
+
+  "provider": {
+    "organization": "北京邮电大学",
+    "department": "人工智能学院",
+    "url": "https://ai.bupt.edu.cn",
+    "license": "京ICP备14033833号-1"
+  },
+
+  "securitySchemes": {
+    "mtls": {
+      "type": "mutualTLS",
+      "description": "智能体间高安全级别通信认证",
+      "x-caChallengeBaseUrl": "https://ca.example.com/challenge"
+    },
+    "oidc": {
+      "type": "openIdConnect",
+      "description": "用户身份认证和授权管理",
+      "openIdConnectUrl": "https://auth.example.com/.well-known/openid-configuration"
+    }
+  },
+
+  "endPoints": [
+    {
+      "url": "https://api.example.com/national-tour-guide/v2",
+      "transport": "HTTP_JSON",
+      "security": [{ "oidc": ["openid", "profile", "tour:coordinate"] }]
+    },
+    {
+      "url": "https://api.example.com/national-tour-guide/rpc",
+      "transport": "JSONRPC",
+      "security": [{ "mtls": [] }]
+    }
+  ],
+
+  "capabilities": {
+    "streaming": true,
+    "notification": true,
+    "messageQueue": ["kafka:3.1", "mqtt:5.0"]
+  },
+
+  "defaultInputModes": ["text/plain", "application/json", "image/jpeg"],
+  "defaultOutputModes": [
+    "text/plain",
+    "application/json",
+    "text/markdown",
+    "application/xml"
+  ],
+
+  "skills": [
+    {
+      "id": "national-tour:destination-discovery",
+      "name": "目的地发现",
+      "description": "基于用户偏好、季节、预算等条件，在全国范围内发现和推荐合适的旅游目的地。涵盖自然风光、历史文化、美食体验、休闲度假等多种旅游类型。",
+      "version": "2.1.0",
+      "tags": [
+        "目的地推荐",
+        "全国旅游",
+        "个性化匹配",
+        "季节性推荐",
+        "预算规划"
+      ],
+      "examples": [
+        "春天适合去哪里看花",
+        "推荐几个避暑胜地",
+        "适合亲子游的自然景区",
+        "预算5000元的7天国内游推荐",
+        "想体验少数民族文化的地方"
+      ],
+      "inputModes": ["text/plain", "application/json", "image/jpeg"],
+      "outputModes": ["text/plain", "application/json", "text/markdown"]
+    },
+    {
+      "id": "national-tour:route-planning",
+      "name": "跨地区路线规划",
+      "description": "设计跨省市的旅游路线，优化交通连接、时间安排和成本控制。支持环线游、直线游、主题游等多种路线类型，可协调沿途各地专业智能体提供详细服务。",
+      "version": "2.0.0",
+      "tags": ["路线规划", "跨地区旅游", "交通优化", "时间管理", "协调服务"],
+      "examples": [
+        "设计一条从北京到西藏的自驾路线",
+        "江南水乡7日深度游路线",
+        "丝绸之路文化之旅规划",
+        "东北三省美食探索路线",
+        "华南海岛跳岛游安排"
+      ]
+    },
+    {
+      "id": "national-tour:agent-coordination",
+      "name": "智能体协调",
+      "description": "作为Leader角色，协调和调度其他地区专业旅游智能体，为用户提供无缝的全程服务体验。负责任务分发、结果整合和服务质量监控。",
+      "version": "1.5.0",
+      "tags": ["智能体协调", "任务调度", "服务整合", "质量监控", "Leader模式"],
+      "examples": [
+        "协调北京和西安的智能体安排古都文化游",
+        "整合多个智能体提供川藏线完整服务",
+        "调度沿海城市智能体规划海岸线自驾游",
+        "协调西南地区智能体安排民族风情体验"
+      ],
+      "inputModes": ["application/json"],
+      "outputModes": ["application/json", "application/xml"]
+    },
+    {
+      "id": "national-tour:weather-integration",
+      "name": "天气与季节指导",
+      "description": "整合全国天气数据和季节性旅游信息，为用户提供最佳旅游时机建议和天气相关的行程调整方案。",
+      "version": "1.2.0",
+      "tags": ["天气预报", "季节指导", "行程调整", "最佳时机", "风险提醒"],
+      "examples": [
+        "现在去云南旅游天气怎么样",
+        "什么时候去新疆最合适",
+        "台风季节如何调整海南行程",
+        "雨季期间的桂林旅游建议"
+      ]
+    }
+  ]
+}
+```
+
+# 5. 补充说明
+
+上述 ACS 定义中的智能体身份认证方式示例为 mTLS，具体认证流程，我们将在后续文档中详细阐述。
+
+本文档定义的智能体能力描述（Agent Capability Specification，ACS）充分考虑了可管理性和兼容性，并无偿提供给相关研发人员和机构参考。我们欢迎从事智能体研发和智能体互联协议制定的其他业界同仁支持并采纳此定义，以形成利于互联互通和兼容性好的智能体身份码定义。

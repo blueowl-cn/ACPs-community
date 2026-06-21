@@ -1,0 +1,41 @@
+# Pre-commit configuration for code quality and formatting (offline version)
+exclude: '^venv/'
+repos:
+  - repo: local
+    hooks:
+      - id: black
+        name: black
+        entry: /Users/huxiaofeng/Projects/agent-ca/ca-server/venv/bin/black
+        language: system
+        types: [python]
+        require_serial: true
+
+      - id: flake8
+        name: flake8
+        entry: /Users/huxiaofeng/Projects/agent-ca/ca-server/venv/bin/flake8
+        language: system
+        types: [python]
+        args: [--max-line-length=120]
+
+      - id: trailing-whitespace
+        name: Remove trailing whitespace
+        entry: sed -i '' 's/[[:space:]]*$//'
+        language: system
+        types: [text]
+
+      - id: end-of-file-fixer
+        name: Fix end of files
+        entry: /Users/huxiaofeng/Projects/agent-ca/ca-server/venv/bin/python -c "import sys; [open(f, 'a').write('\n') if open(f, 'rb').read() and not open(f, 'rb').read().endswith(b'\n') else None for f in sys.argv[1:]]"
+        language: system
+        types: [text]
+
+      - id: check-yaml
+        name: Check Yaml
+        entry: /Users/huxiaofeng/Projects/agent-ca/ca-server/venv/bin/python -c "import sys, yaml; [yaml.safe_load(open(f)) for f in sys.argv[1:]]"
+        language: system
+        files: \.(yaml|yml)$
+
+      - id: check-added-large-files
+        name: Check for added large files
+        entry: /Users/huxiaofeng/Projects/agent-ca/ca-server/venv/bin/python -c "import sys, os; [sys.exit(1) if os.path.getsize(f) > 5000000 else None for f in sys.argv[1:]]"
+        language: system
