@@ -1,0 +1,47 @@
+[project]
+name = "acps-ca-client"
+version = "2.0.0"
+description = "ACPs ATR CA Client - a Python implementation of the CA Client for ATR"
+authors = [{ name = "Team", email = "team@ioa.pub" }]
+readme = "README.md"
+license = "MulanPSL-2.0"
+license-files = ["LICENSE"]
+requires-python = ">=3.10,<4.0"
+dependencies = [
+    "click>=8.1,<9.0",
+    "cryptography>=41.0,<42.0",
+    "requests>=2.31,<3.0",
+]
+
+[project.scripts]
+ca-client = "acps_ca_client.cli:main"
+
+[dependency-groups]
+dev = ["pytest>=8.4.0,<9.0.0", "pytest-cov>=6.2.1,<7.0.0"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+pythonpath = ["."]
+addopts = [
+    "-v",
+    "--tb=short",
+    "--strict-markers",
+    "--disable-warnings",
+    "--color=yes",
+]
+markers = [
+    "unit: marks tests as unit tests",
+    "integration: marks tests as integration tests (Click CliRunner)",
+    "e2e: marks tests as end-to-end tests (requires ca-server)",
+]
+
+[tool.coverage.run]
+source = ["acps_ca_client"]
+omit = ["*/tests/*", "*/venv/*", "*/__pycache__/*"]
+
+[build-system]
+requires = ["poetry-core>=2.0.0"]
+build-backend = "poetry.core.masonry.api"

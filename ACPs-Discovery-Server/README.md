@@ -11,7 +11,7 @@
 - **ORM**: SQLModel/SQLAlchemy
 - **数据库**: PostgreSQL
 - **数据库结构同步**: Alembic
-- **外部大语言模型 API**: DeepSeek API
+- **外部大语言模型 API**: DASHSCOPE API
 - **Embedding API**: OPENAI API
 
 
@@ -19,12 +19,29 @@
 
 首先，确保已经安装了 Python，推荐使用 Python 3.13 版本。可以从Python 官方网站下载并安装适合你操作系统的 Python 版本。
 
+0. 安装 ACPs SDK（前置依赖）
+
+本项目基于 `ACPs SDK` 开发，需在本地提前获取该 SDK。
+
+请先克隆 SDK 仓库：
+
+```bash
+git clone [Repository-URL]
+```
+
 1. 克隆代码库
 
 ```bash
 git clone [Repository-URL]
 cd [代码库本地目录]
 ```
+参考目录结构
+```
+project/
+├── acps-sdk/
+└── discovery-server/
+```
+sdk仅下载到本地使用参考目录结构即可，无需其他操作。
 
 2. 创建虚拟环境并安装依赖
 
@@ -39,7 +56,7 @@ pip install -r requirements.txt
 ```bash
 cp .env.example .env
 # 编辑 .env 文件，修改数据库相关配置，以及：
-# 1. 至少配置 OPENAI_API_KEY (用于 Embedding) 以及 DeepSeek/其他 LLM 的 Key
+# 1. 至少配置 OPENAI_API_KEY (用于 Embedding) 以及 其他 LLM 的 Key
 # 2. 配置 OPENAI_BASE_URL（如果使用非官方端点）
 ```
 
@@ -78,17 +95,8 @@ chmod +x stop.sh    # 赋予执行权限（仅需一次）
 
 "error_msg": "Failed to discover: Database query failed: Failed to enhanced_discover: 'skills'"
 
-#当出现以上报错时，是因为数据库中数据过少导致以下代码没有搜索到数据
-
-            # 获取数据库中的 Agent，使用 JSONB 操作符根据查询参数进行查询
-            async with AsyncSessionLocal() as session:
-                # 使用 JSONB 的 ->> 操作符提取 description 字段，然后进行 LIKE 查询
-                stmt = select(Agent).where(
-                    Agent.acs["description"].astext.like(f"%{query}%")
-                )
-
-#可以考虑暂时使用全搜代替
-                #stmt = select(Agent) # 暂时用全搜，测试更方便
+#当出现以上报错时，是因为过滤条件过于严苛或过滤条件矛盾导致下面的方法没能从数据库中获取到智能体
+async def _discovery_agents_async(self, query: str, limit: int, filters: DiscoveryFilters = None) -> Tuple[List[DiscoveryAgentSkill], Dict, str]:
 ```
 
 

@@ -13,7 +13,6 @@ def disable_mock_mode():
     mock_env_vars = [
         "AGENT_REGISTRY_MOCK",
         "HTTP01_VALIDATION_MOCK",
-        "EXTERNAL_SERVICES_MOCK",
     ]
 
     for var in mock_env_vars:

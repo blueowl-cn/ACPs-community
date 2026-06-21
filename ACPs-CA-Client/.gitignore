@@ -10,6 +10,7 @@ build/
 
 # Virtual environments
 venv/
+.venv/
 env/
 ENV/
 .env
@@ -55,8 +56,14 @@ nosetests.xml
 coverage.xml
 *.cover
 .hypothesis/
+.pytest_cache/
 
 # certs and keys
+csr/
 certs/
 private/
 challenges/
+
+# Configuration files that may contain sensitive information
+ca-client.conf
+.ca-client.conf

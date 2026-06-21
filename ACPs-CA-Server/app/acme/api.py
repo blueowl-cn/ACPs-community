@@ -191,12 +191,10 @@ async def get_directory(
         newNonce=f"{base_url}/new-nonce",
         newAccount=f"{base_url}/new-account",
         newOrder=f"{base_url}/new-order",
+        newAuthz=None,
         revokeCert=f"{base_url}/revoke-cert",
         keyChange=f"{base_url}/key-change",
         meta={
-            "termsOfService": settings.acme_terms_of_service,
-            "website": settings.acme_website,
-            "caaIdentities": settings.acme_caa_identities_list,
             "externalAccountRequired": False,
         },
     )
@@ -794,6 +792,9 @@ async def respond_to_challenge(
                     challenge = challenge_service.update_challenge_status(
                         challenge, ChallengeStatus.INVALID, error
                     )
+                    authorization = authorization_service.update_authorization_status(
+                        authorization, AuthorizationStatus.INVALID
+                    )
 
         base_url = get_configured_acme_base_url(settings)
 
@@ -810,7 +811,12 @@ async def respond_to_challenge(
         if challenge.error:
             response_data["error"] = challenge.error
 
-        return create_acme_response(response_data, nonce_service)
+        response = create_acme_response(response_data, nonce_service)
+        # 添加 Link 头指向 Authorization
+        authz_url = f"{base_url}/authz/{authorization.authz_id}"
+        response.headers["Link"] = f'<{authz_url}>; rel="up"'
+
+        return response
 
     except AcmeException:
         raise
@@ -934,7 +940,9 @@ async def finalize_order(
             response_data["certificates"] = cert_urls
             response_data["certificate_count"] = len(certificates)
 
-        return create_acme_response(response_data, nonce_service)
+        response = create_acme_response(response_data, nonce_service)
+        response.headers["Location"] = f"{base_url}/order/{order.order_id}"
+        return response
 
     except AcmeException:
         raise
@@ -1099,15 +1107,12 @@ async def revoke_certificate(
         # 执行证书吊销
         certificate_service.revoke_certificate(acme_cert, reason_code)
 
-        # 返回成功响应
-        response_data = {
-            "status": "success",
-            "message": "Certificate revoked successfully",
-            "revocation_date": format_datetime(beijing_now()),
-            "reason": reason_code,
-        }
-
-        return create_acme_response(response_data, nonce_service, 200)
+        # 返回成功响应（空内容）
+        new_nonce = nonce_service.generate_nonce()
+        return Response(
+            status_code=200,
+            headers={"Replay-Nonce": new_nonce, "Cache-Control": "no-store"},
+        )
 
     except AcmeException:
         raise
@@ -1146,16 +1151,17 @@ async def change_key(
             )
 
         # 内层JWS应该包含账户的新公钥信息
-        # payload 应该是一个JWS字符串，使用新密钥签名
+        # payload 应该是内层JWS对象
         try:
-            # 解析内层JWS的protected header来获取新的JWK
-            inner_jws_parts = payload.split(".")
-            if len(inner_jws_parts) != 3:
-                raise ValueError("Invalid inner JWS format")
+            if not isinstance(payload, dict):
+                raise ValueError("Payload must be a JSON object")
 
-            inner_protected_b64 = inner_jws_parts[0]
-            inner_payload_b64 = inner_jws_parts[1]
-            inner_signature_b64 = inner_jws_parts[2]
+            inner_protected_b64 = payload.get("protected")
+            inner_payload_b64 = payload.get("payload")
+            inner_signature_b64 = payload.get("signature")
+
+            if not all([inner_protected_b64, inner_payload_b64, inner_signature_b64]):
+                raise ValueError("Invalid inner JWS format")
 
             # 解码内层protected header
             inner_protected = parse_protected_header(inner_protected_b64)
@@ -1171,7 +1177,9 @@ async def change_key(
 
             # 验证内层JWS签名（使用新密钥）
             jws_verifier = get_jws_verifier()
-            inner_jws_string = payload
+            inner_jws_string = (
+                f"{inner_protected_b64}.{inner_payload_b64}.{inner_signature_b64}"
+            )
             try:
                 jws_verifier.verify_jws_signature(
                     inner_jws_string, new_jwk, expected_nonce=None, expected_url=None

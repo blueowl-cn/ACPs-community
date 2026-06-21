@@ -27,8 +27,14 @@ error() {
 
 cd "$PROJECT_ROOT"
 
-if [ ! -d "$VENV_DIR" ] || [ ! -x "$PYTHON_BIN" ]; then
-  error "Missing Python virtual environment at $VENV_DIR"
+# 自动从当前激活的环境中寻找Python解释器
+PYTHON_BIN="$(command -v python)"
+
+cd "$PROJECT_ROOT"
+
+# 检查是否能找到Python，并且它是否可执行
+if [ -z "$PYTHON_BIN" ] || [ ! -x "$PYTHON_BIN" ]; then
+  error "Could not find an active Python executable. Please activate your Conda or venv environment first."
 fi
 
 if [ ! -f "$ENV_FILE" ]; then

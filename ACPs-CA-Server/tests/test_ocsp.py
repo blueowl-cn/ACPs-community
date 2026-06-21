@@ -4,17 +4,31 @@ OCSP (Online Certificate Status Protocol) 测试
 测试OCSP状态查询、响应器信息和统计功能
 """
 
+import base64
+import datetime
+import hashlib
+from dataclasses import dataclass
+from datetime import timedelta
+from uuid import UUID, uuid4
+from unittest.mock import MagicMock
+
 import pytest
+from cryptography import x509
+from cryptography.x509 import NameOID, ocsp
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import rsa
 from fastapi.testclient import TestClient
 from sqlmodel import Session, select
-from datetime import timedelta
-from uuid import uuid4
 
 from app.core.db_session import engine
 from app.common import (
     Certificate,
-    OCSPResponder,
     CertificateStatus,
+    CertificateType,
+    OCSPRequest,
+    OCSPResponder,
+    OCSPResponse,
+    OCSPResponseStatus,
     RevocationReason,
     beijing_now,
 )
@@ -22,6 +36,21 @@ from app.common import OCSPService
 
 
 pytestmark = pytest.mark.ocsp
+
+
+@dataclass
+class OCSPCryptoSetup:
+    request_der: bytes
+    serial_number: str
+    issuer_key_hash: str
+    issuer_name_hash: str
+    hash_algorithm: str
+    ca_cert: x509.Certificate
+    responder_name: str
+    responder_key_hash_hex: str
+    responder_key_hash_bytes: bytes
+    certificate_id: UUID
+    responder_id: UUID
 
 
 @pytest.fixture
@@ -117,13 +146,146 @@ def expired_certificate(db_session):
     return cert
 
 
+@pytest.fixture
+def ocsp_crypto_setup(db_session):
+    """生成可用于端到端验证的 OCSP 请求和响应环境"""
+
+    ca_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    ca_subject = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "Test CA")])
+    now_utc = datetime.datetime.now(datetime.timezone.utc)
+    ca_cert = (
+        x509.CertificateBuilder()
+        .subject_name(ca_subject)
+        .issuer_name(ca_subject)
+        .public_key(ca_key.public_key())
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(now_utc - datetime.timedelta(days=1))
+        .not_valid_after(now_utc + datetime.timedelta(days=365))
+        .add_extension(x509.BasicConstraints(ca=True, path_length=None), critical=True)
+        .sign(private_key=ca_key, algorithm=hashes.SHA256())
+    )
+
+    leaf_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    leaf_subject = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "Leaf Cert")])
+    leaf_cert = (
+        x509.CertificateBuilder()
+        .subject_name(leaf_subject)
+        .issuer_name(ca_subject)
+        .public_key(leaf_key.public_key())
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(now_utc - datetime.timedelta(days=1))
+        .not_valid_after(now_utc + datetime.timedelta(days=365))
+        .sign(private_key=ca_key, algorithm=hashes.SHA256())
+    )
+
+    certificate = Certificate(
+        certificate_type=CertificateType.USER,
+        serial_number=str(leaf_cert.serial_number),
+        subject=leaf_cert.subject.rfc4514_string(),
+        issuer=leaf_cert.issuer.rfc4514_string(),
+        status=CertificateStatus.VALID,
+        issued_at=beijing_now(),
+        expires_at=beijing_now() + datetime.timedelta(days=365),
+        certificate_pem=leaf_cert.public_bytes(serialization.Encoding.PEM).decode(),
+        public_key=leaf_key.public_key()
+        .public_bytes(
+            serialization.Encoding.PEM,
+            serialization.PublicFormat.SubjectPublicKeyInfo,
+        )
+        .decode(),
+    )
+    db_session.add(certificate)
+
+    responder_name = "Crypto Test Responder"
+    responder = OCSPResponder(
+        name=responder_name,
+        certificate_pem=ca_cert.public_bytes(serialization.Encoding.PEM).decode(),
+        private_key_pem=ca_key.private_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PrivateFormat.PKCS8,
+            encryption_algorithm=serialization.NoEncryption(),
+        ).decode(),
+        certificate_serial=format(ca_cert.serial_number, "x"),
+        is_active=True,
+        endpoints={"primary": "http://ocsp.test"},
+        supported_extensions=["nonce"],
+    )
+    db_session.add(responder)
+    db_session.commit()
+    db_session.refresh(certificate)
+    db_session.refresh(responder)
+
+    builder = ocsp.OCSPRequestBuilder()
+    builder = builder.add_certificate(leaf_cert, ca_cert, hashes.SHA1())
+    ocsp_request = builder.build()
+    request_der = ocsp_request.public_bytes(serialization.Encoding.DER)
+
+    responder_key_hash_bytes = (
+        ocsp.OCSPResponseBuilder()
+        .add_response(
+            cert=leaf_cert,
+            issuer=ca_cert,
+            algorithm=hashes.SHA1(),
+            cert_status=x509.ocsp.OCSPCertStatus.GOOD,
+            this_update=now_utc,
+            next_update=now_utc + datetime.timedelta(hours=24),
+            revocation_time=None,
+            revocation_reason=None,
+        )
+        .responder_id(x509.ocsp.OCSPResponderEncoding.HASH, ca_cert)
+        .certificates([ca_cert])
+        .sign(private_key=ca_key, algorithm=hashes.SHA256())
+        .responder_key_hash
+    )
+
+    setup = OCSPCryptoSetup(
+        request_der=request_der,
+        serial_number=str(leaf_cert.serial_number),
+        issuer_key_hash=ocsp_request.issuer_key_hash.hex(),
+        issuer_name_hash=ocsp_request.issuer_name_hash.hex(),
+        hash_algorithm=ocsp_request.hash_algorithm.name,
+        ca_cert=ca_cert,
+        responder_name=responder_name,
+        responder_key_hash_hex=responder_key_hash_bytes.hex(),
+        responder_key_hash_bytes=responder_key_hash_bytes,
+        certificate_id=certificate.id,
+        responder_id=responder.id,
+    )
+
+    yield setup
+
+    responses = db_session.exec(
+        select(OCSPResponse).where(
+            OCSPResponse.certificate_serial == setup.serial_number
+        )
+    ).all()
+    for response in responses:
+        db_session.delete(response)
+
+    requests = db_session.exec(
+        select(OCSPRequest).where(OCSPRequest.certificate_serial == setup.serial_number)
+    ).all()
+    for request in requests:
+        db_session.delete(request)
+
+    certificate_obj = db_session.get(Certificate, setup.certificate_id)
+    if certificate_obj:
+        db_session.delete(certificate_obj)
+
+    responder_obj = db_session.get(OCSPResponder, setup.responder_id)
+    if responder_obj:
+        db_session.delete(responder_obj)
+
+    db_session.commit()
+
+
 class TestOCSPCertificateStatusAPI:
     """测试OCSP证书状态查询API"""
 
     def test_get_valid_certificate_status(self, client: TestClient, valid_certificate):
         """测试查询有效证书状态"""
         response = client.get(
-            f"/acps-atr-v1/ocsp/certificate/{valid_certificate.serial_number}"
+            f"/acps-atr-v2/ocsp/certificate/{valid_certificate.serial_number}"
         )
         assert response.status_code == 200
 
@@ -138,7 +300,7 @@ class TestOCSPCertificateStatusAPI:
     ):
         """测试查询已吊销证书状态"""
         response = client.get(
-            f"/acps-atr-v1/ocsp/certificate/{revoked_certificate.serial_number}"
+            f"/acps-atr-v2/ocsp/certificate/{revoked_certificate.serial_number}"
         )
         assert response.status_code == 200
 
@@ -154,7 +316,7 @@ class TestOCSPCertificateStatusAPI:
     ):
         """测试查询已过期证书状态"""
         response = client.get(
-            f"/acps-atr-v1/ocsp/certificate/{expired_certificate.serial_number}"
+            f"/acps-atr-v2/ocsp/certificate/{expired_certificate.serial_number}"
         )
         assert response.status_code == 200
 
@@ -164,7 +326,7 @@ class TestOCSPCertificateStatusAPI:
 
     def test_get_unknown_certificate_status(self, client: TestClient):
         """测试查询不存在证书状态"""
-        response = client.get("/acps-atr-v1/ocsp/certificate/NONEXISTENT123456")
+        response = client.get("/acps-atr-v2/ocsp/certificate/NONEXISTENT123456")
         assert response.status_code == 200
 
         data = response.json()
@@ -179,7 +341,7 @@ class TestOCSPCertificateStatusAPI:
         responses = []
         for _ in range(3):
             response = client.get(
-                f"/acps-atr-v1/ocsp/certificate/{valid_certificate.serial_number}"
+                f"/acps-atr-v2/ocsp/certificate/{valid_certificate.serial_number}"
             )
             assert response.status_code == 200
             responses.append(response.json())
@@ -213,7 +375,7 @@ class TestOCSPBatchAPI:
             ]
         }
 
-        response = client.post("/acps-atr-v1/ocsp/batch", json=request_data)
+        response = client.post("/acps-atr-v2/ocsp/batch", json=request_data)
         assert response.status_code == 200
 
         data = response.json()
@@ -239,7 +401,7 @@ class TestOCSPBatchAPI:
         """测试空的批量请求"""
         request_data = {"certificates": []}
 
-        response = client.post("/acps-atr-v1/ocsp/batch", json=request_data)
+        response = client.post("/acps-atr-v2/ocsp/batch", json=request_data)
         assert response.status_code == 200
 
         data = response.json()
@@ -264,7 +426,7 @@ class TestOCSPBatchAPI:
 
         request_data = {"certificates": certificates}
 
-        response = client.post("/acps-atr-v1/ocsp/batch", json=request_data)
+        response = client.post("/acps-atr-v2/ocsp/batch", json=request_data)
         assert response.status_code == 200
 
         data = response.json()
@@ -276,7 +438,7 @@ class TestOCSPResponderAPI:
 
     def test_get_responder_info(self, client: TestClient, ocsp_responder):
         """测试获取OCSP响应器信息"""
-        response = client.get("/acps-atr-v1/ocsp/responder/info")
+        response = client.get("/acps-atr-v2/ocsp/responder/info")
         assert response.status_code == 200
 
         data = response.json()
@@ -293,7 +455,7 @@ class TestOCSPResponderAPI:
             db_session.delete(responder)
         db_session.commit()
 
-        response = client.get("/acps-atr-v1/ocsp/responder/info")
+        response = client.get("/acps-atr-v2/ocsp/responder/info")
         assert response.status_code == 404
 
 
@@ -302,7 +464,7 @@ class TestOCSPStatsAPI:
 
     def test_get_ocsp_statistics(self, client: TestClient):
         """测试获取OCSP统计信息"""
-        response = client.get("/acps-atr-v1/ocsp/stats")
+        response = client.get("/acps-atr-v2/ocsp/stats")
         assert response.status_code == 200
 
         data = response.json()
@@ -327,18 +489,18 @@ class TestOCSPStatsAPI:
     def test_stats_update_after_requests(self, client: TestClient, valid_certificate):
         """测试请求后统计数据更新"""
         # 获取初始统计
-        initial_response = client.get("/acps-atr-v1/ocsp/stats")
+        initial_response = client.get("/acps-atr-v2/ocsp/stats")
         initial_data = initial_response.json()
         initial_total = initial_data["total_requests"]
 
         # 执行一些OCSP查询
         for _ in range(3):
             client.get(
-                f"/acps-atr-v1/ocsp/certificate/{valid_certificate.serial_number}"
+                f"/acps-atr-v2/ocsp/certificate/{valid_certificate.serial_number}"
             )
 
         # 获取更新后的统计
-        updated_response = client.get("/acps-atr-v1/ocsp/stats")
+        updated_response = client.get("/acps-atr-v2/ocsp/stats")
         updated_data = updated_response.json()
 
         # 注意：当前实现可能不会实时更新统计，这取决于具体实现
@@ -373,6 +535,57 @@ class TestOCSPService:
         assert status is not None
         assert status["serialNumber"] == "UNKNOWN_SERIAL"
         assert status["certificateStatus"] == "unknown"
+
+    def test_process_ocsp_request_records_modern_fields(
+        self, ocsp_service, ocsp_crypto_setup, monkeypatch, db_session
+    ):
+        """验证 cryptography 新版属性与响应者信息记录逻辑"""
+
+        mock_ca_manager = MagicMock()
+        mock_ca_manager.ca_cert = ocsp_crypto_setup.ca_cert
+        monkeypatch.setattr(
+            "app.common.ocsp_service.get_ca_manager", lambda: mock_ca_manager
+        )
+
+        response_der, processing_time = ocsp_service.process_ocsp_request(
+            ocsp_crypto_setup.request_der
+        )
+
+        assert processing_time >= 0
+
+        ocsp_response = x509.ocsp.load_der_ocsp_response(response_der)
+        assert ocsp_response.response_status == x509.ocsp.OCSPResponseStatus.SUCCESSFUL
+        assert ocsp_response.certificate_status == x509.ocsp.OCSPCertStatus.GOOD
+        assert (
+            ocsp_response.responder_key_hash
+            == ocsp_crypto_setup.responder_key_hash_bytes
+        )
+        assert ocsp_response.certificates
+        assert (
+            ocsp_response.certificates[0].subject == ocsp_crypto_setup.ca_cert.subject
+        )
+
+        stored_response = db_session.exec(
+            select(OCSPResponse)
+            .where(OCSPResponse.certificate_serial == ocsp_crypto_setup.serial_number)
+            .order_by(OCSPResponse.created_at.desc())
+        ).first()
+        assert stored_response is not None
+        assert stored_response.cert_status == OCSPResponseStatus.GOOD
+        assert stored_response.responder_id == ocsp_crypto_setup.responder_name
+        assert (
+            stored_response.responder_key_hash
+            == ocsp_crypto_setup.responder_key_hash_hex
+        )
+
+        stored_request = db_session.exec(
+            select(OCSPRequest).where(OCSPRequest.id == stored_response.request_id)
+        ).first()
+        assert stored_request is not None
+        assert stored_request.certificate_serial == ocsp_crypto_setup.serial_number
+        assert stored_request.issuer_key_hash == ocsp_crypto_setup.issuer_key_hash
+        assert stored_request.issuer_name_hash == ocsp_crypto_setup.issuer_name_hash
+        assert stored_request.hash_algorithm == ocsp_crypto_setup.hash_algorithm
 
     def test_get_responder_info(self, ocsp_service, ocsp_responder):
         """测试获取响应器信息"""
@@ -424,7 +637,7 @@ class TestOCSPIntegration:
         """测试证书吊销后OCSP状态更新"""
         # 初始状态应该是good
         initial_response = client.get(
-            f"/acps-atr-v1/ocsp/certificate/{valid_certificate.serial_number}"
+            f"/acps-atr-v2/ocsp/certificate/{valid_certificate.serial_number}"
         )
         assert initial_response.status_code == 200
         assert initial_response.json()["certificateStatus"] == "good"
@@ -438,7 +651,7 @@ class TestOCSPIntegration:
 
         # 再次查询OCSP状态
         updated_response = client.get(
-            f"/acps-atr-v1/ocsp/certificate/{valid_certificate.serial_number}"
+            f"/acps-atr-v2/ocsp/certificate/{valid_certificate.serial_number}"
         )
         assert updated_response.status_code == 200
 
@@ -449,7 +662,7 @@ class TestOCSPIntegration:
     def test_ocsp_response_format(self, client: TestClient, valid_certificate):
         """测试OCSP响应格式的正确性"""
         response = client.get(
-            f"/acps-atr-v1/ocsp/certificate/{valid_certificate.serial_number}"
+            f"/acps-atr-v2/ocsp/certificate/{valid_certificate.serial_number}"
         )
         assert response.status_code == 200
 
@@ -471,13 +684,13 @@ class TestOCSPIntegration:
     def test_ocsp_error_handling(self, client: TestClient):
         """测试OCSP错误处理"""
         # 测试无效的序列号格式
-        response = client.get("/acps-atr-v1/ocsp/certificate/")
+        response = client.get("/acps-atr-v2/ocsp/certificate/")
         assert (
             response.status_code == 400
         )  # FastAPI validation error for missing path parameter
 
         # 测试特殊字符
-        response = client.get("/acps-atr-v1/ocsp/certificate/INVALID!@#$%")
+        response = client.get("/acps-atr-v2/ocsp/certificate/INVALID!@#$%")
         assert response.status_code == 200
         assert response.json()["certificateStatus"] == "unknown"
 
@@ -489,7 +702,7 @@ class TestOCSPIntegration:
         start_time = time.time()
         for _ in range(10):
             response = client.get(
-                f"/acps-atr-v1/ocsp/certificate/{valid_certificate.serial_number}"
+                f"/acps-atr-v2/ocsp/certificate/{valid_certificate.serial_number}"
             )
             assert response.status_code == 200
         end_time = time.time()
@@ -543,3 +756,44 @@ class TestOCSPTimezoneHandling:
         # OCSP应该检测到过期并返回expired状态
         status = ocsp_service.get_certificate_status(past_expired_cert.serial_number)
         assert status["certificateStatus"] == "expired"
+
+
+class TestOCSPStandardAPI:
+    """测试标准OCSP API接口 (RFC 6960)"""
+
+    def test_ocsp_post_request(self, client: TestClient):
+        """测试POST方法查询OCSP"""
+        # 构造一个伪造的OCSP请求 (DER编码)
+        # 这里只是为了测试API能否接收请求，不需要真实的OCSP请求结构
+        # 因为我们的Mock服务或者实际服务会解析它
+        # 注意：实际服务会尝试解析ASN.1，所以我们需要一个最小合法的ASN.1结构或者Mock掉解析过程
+        # 这里我们发送一个简单的字节序列，预期会返回400或者解析错误，
+        # 但如果我们要测试成功路径，我们需要构造合法的OCSPRequest
+        # 鉴于构造复杂的ASN.1比较麻烦，我们这里主要测试端点存在性和Content-Type检查
+
+        # 1. 测试错误的Content-Type
+        response = client.post(
+            "/acps-atr-v2/ocsp",
+            content=b"dummy_request",
+            headers={"Content-Type": "application/json"},
+        )
+        assert response.status_code == 415
+
+        # 2. 测试正确的Content-Type (但请求体无效)
+        response = client.post(
+            "/acps-atr-v2/ocsp",
+            content=b"dummy_request",
+            headers={"Content-Type": "application/ocsp-request"},
+        )
+        # 因为请求体不是有效的ASN.1，预期返回400
+        assert response.status_code == 400
+
+    def test_ocsp_get_request(self, client: TestClient):
+        """测试GET方法查询OCSP"""
+        # 构造Base64URL编码的请求
+        # 同样，这里只是测试端点路由
+        dummy_req = base64.urlsafe_b64encode(b"dummy_request").decode()
+
+        response = client.get(f"/acps-atr-v2/ocsp/{dummy_req}")
+        # 因为请求体不是有效的ASN.1，预期返回400
+        assert response.status_code == 400

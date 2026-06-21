@@ -9,7 +9,7 @@ from fastapi import APIRouter, HTTPException, status, Depends, Query, Path
 from fastapi.responses import PlainTextResponse
 from sqlmodel import Session
 
-from app.core.db_session import engine
+from app.core.db_session import get_session
 from app.common import (
     CertificateResponse,
     CertificateListResponse,
@@ -25,9 +25,11 @@ from .services import CertificateManagementService
 router = APIRouter()
 
 
-def get_certificate_service() -> CertificateManagementService:
+def get_certificate_service(
+    db: Session = Depends(get_session),
+) -> CertificateManagementService:
     """依赖注入：获取证书管理服务"""
-    return CertificateManagementService(Session(engine))
+    return CertificateManagementService(db)
 
 
 # 根证书管理

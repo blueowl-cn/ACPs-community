@@ -9,7 +9,8 @@ import base64
 import hashlib
 from typing import Dict, Any, Optional, Tuple
 from cryptography.hazmat.primitives import hashes
-from cryptography.hazmat.primitives.asymmetric import rsa, padding
+from cryptography.hazmat.primitives.asymmetric import rsa, ec, padding
+from cryptography.hazmat.primitives.asymmetric.utils import encode_dss_signature
 from cryptography.hazmat.backends import default_backend
 
 from .exception import AcmeException, AcmeError
@@ -104,7 +105,8 @@ class JWSVerifier:
         )
 
         # 验证签名
-        self._verify_signature(jws_data, public_key_jwk, signature_b64)
+        alg = protected_header["alg"]
+        self._verify_signature(jws_data, public_key_jwk, signature_b64, alg)
 
         return payload
 
@@ -126,7 +128,7 @@ class JWSVerifier:
 
         # 检查算法
         alg = protected_header["alg"]
-        if alg not in ["RS256", "RS384", "RS512"]:
+        if alg not in ["RS256", "RS384", "RS512", "ES256", "ES384", "ES512"]:
             raise AcmeException(
                 status_code=400,
                 error_name=AcmeError.UNSUPPORTED_ALGORITHM,
@@ -185,7 +187,11 @@ class JWSVerifier:
             )
 
     def _verify_signature(
-        self, jws_data: str, public_key_jwk: Dict[str, Any], signature_b64: str
+        self,
+        jws_data: str,
+        public_key_jwk: Dict[str, Any],
+        signature_b64: str,
+        alg: str = "RS256",
     ):
         """验证 JWS 签名"""
         # 分割 JWS 获取签名部分
@@ -198,11 +204,60 @@ class JWSVerifier:
         # 从 JWK 构建公钥
         public_key = self._jwk_to_public_key(public_key_jwk)
 
+        # 确定哈希算法
+        if alg in ["RS256", "ES256"]:
+            hash_alg = hashes.SHA256()
+        elif alg in ["RS384", "ES384"]:
+            hash_alg = hashes.SHA384()
+        elif alg in ["RS512", "ES512"]:
+            hash_alg = hashes.SHA512()
+        else:
+            raise AcmeException(
+                status_code=400,
+                error_name=AcmeError.UNSUPPORTED_ALGORITHM,
+                error_msg=f"Unsupported algorithm: {alg}",
+            )
+
         # 验证签名
         try:
-            public_key.verify(
-                signature, signing_input, padding.PKCS1v15(), hashes.SHA256()
-            )
+            if alg.startswith("RS"):
+                if not isinstance(public_key, rsa.RSAPublicKey):
+                    raise AcmeException(
+                        status_code=400,
+                        error_name=AcmeError.MALFORMED,
+                        error_msg="Key type mismatch: expected RSA key",
+                    )
+                public_key.verify(
+                    signature, signing_input, padding.PKCS1v15(), hash_alg
+                )
+            elif alg.startswith("ES"):
+                if not isinstance(public_key, ec.EllipticCurvePublicKey):
+                    raise AcmeException(
+                        status_code=400,
+                        error_name=AcmeError.MALFORMED,
+                        error_msg="Key type mismatch: expected EC key",
+                    )
+
+                # JWS 使用 Raw (R||S) 格式，cryptography 需要 DER 格式
+                try:
+                    # 计算坐标长度 (签名长度的一半)
+                    coord_len = len(signature) // 2
+                    r_bytes = signature[:coord_len]
+                    s_bytes = signature[coord_len:]
+
+                    r = int.from_bytes(r_bytes, byteorder="big")
+                    s = int.from_bytes(s_bytes, byteorder="big")
+
+                    der_signature = encode_dss_signature(r, s)
+                    public_key.verify(der_signature, signing_input, ec.ECDSA(hash_alg))
+                except Exception as e:
+                    raise AcmeException(
+                        status_code=400,
+                        error_name=AcmeError.MALFORMED,
+                        error_msg=f"Invalid EC signature format: {str(e)}",
+                    )
+        except AcmeException:
+            raise
         except Exception as e:
             raise AcmeException(
                 status_code=400,
@@ -210,48 +265,91 @@ class JWSVerifier:
                 error_msg=f"Invalid signature: {str(e)}",
             )
 
-    def _jwk_to_public_key(self, jwk: Dict[str, Any]) -> rsa.RSAPublicKey:
+    def _jwk_to_public_key(self, jwk: Dict[str, Any]):
         """将 JWK 转换为公钥对象"""
-        if jwk.get("kty") != "RSA":
+        kty = jwk.get("kty")
+
+        if kty == "RSA":
+            try:
+                # 解码 n 和 e
+                n_bytes = self.base64url_decode(jwk["n"])
+                e_bytes = self.base64url_decode(jwk["e"])
+
+                # 将字节转换为整数
+                n = int.from_bytes(n_bytes, byteorder="big")
+                e = int.from_bytes(e_bytes, byteorder="big")
+
+                # 构建 RSA 公钥
+                public_numbers = rsa.RSAPublicNumbers(e, n)
+                return public_numbers.public_key(backend=default_backend())
+            except Exception as e:
+                raise AcmeException(
+                    status_code=400,
+                    error_name=AcmeError.MALFORMED,
+                    error_msg=f"Invalid RSA JWK format: {str(e)}",
+                )
+
+        elif kty == "EC":
+            try:
+                crv = jwk["crv"]
+                x_bytes = self.base64url_decode(jwk["x"])
+                y_bytes = self.base64url_decode(jwk["y"])
+
+                x = int.from_bytes(x_bytes, byteorder="big")
+                y = int.from_bytes(y_bytes, byteorder="big")
+
+                if crv == "P-256":
+                    curve = ec.SECP256R1()
+                elif crv == "P-384":
+                    curve = ec.SECP384R1()
+                elif crv == "P-521":
+                    curve = ec.SECP521R1()
+                else:
+                    raise AcmeException(
+                        status_code=400,
+                        error_name=AcmeError.UNSUPPORTED_ALGORITHM,
+                        error_msg=f"Unsupported curve: {crv}",
+                    )
+
+                public_numbers = ec.EllipticCurvePublicNumbers(x, y, curve)
+                return public_numbers.public_key(backend=default_backend())
+            except AcmeException:
+                raise
+            except Exception as e:
+                raise AcmeException(
+                    status_code=400,
+                    error_name=AcmeError.MALFORMED,
+                    error_msg=f"Invalid EC JWK format: {str(e)}",
+                )
+
+        else:
             raise AcmeException(
                 status_code=400,
                 error_name=AcmeError.UNSUPPORTED_ALGORITHM,
-                error_msg="Only RSA keys are supported",
-            )
-
-        try:
-            # 解码 n 和 e
-            n_bytes = self.base64url_decode(jwk["n"])
-            e_bytes = self.base64url_decode(jwk["e"])
-
-            # 将字节转换为整数
-            n = int.from_bytes(n_bytes, byteorder="big")
-            e = int.from_bytes(e_bytes, byteorder="big")
-
-            # 构建 RSA 公钥
-            public_numbers = rsa.RSAPublicNumbers(e, n)
-            public_key = public_numbers.public_key(backend=default_backend())
-
-            return public_key
-
-        except Exception as e:
-            raise AcmeException(
-                status_code=400,
-                error_name=AcmeError.MALFORMED,
-                error_msg=f"Invalid JWK format: {str(e)}",
+                error_msg=f"Unsupported key type: {kty}",
             )
 
     def compute_jwk_thumbprint(self, jwk: Dict[str, Any]) -> str:
         """计算 JWK 指纹"""
-        if jwk.get("kty") != "RSA":
+        kty = jwk.get("kty")
+
+        if kty == "RSA":
+            # 创建规范化的 JWK
+            canonical_jwk = {"e": jwk["e"], "kty": jwk["kty"], "n": jwk["n"]}
+        elif kty == "EC":
+            # 创建规范化的 JWK
+            canonical_jwk = {
+                "crv": jwk["crv"],
+                "kty": jwk["kty"],
+                "x": jwk["x"],
+                "y": jwk["y"],
+            }
+        else:
             raise AcmeException(
                 status_code=400,
                 error_name=AcmeError.UNSUPPORTED_ALGORITHM,
-                error_msg="Only RSA keys are supported",
+                error_msg=f"Unsupported key type: {kty}",
             )
-
-        # 创建规范化的 JWK
-        canonical_jwk = {"e": jwk["e"], "kty": jwk["kty"], "n": jwk["n"]}
 
         # 转换为 JSON 并计算 SHA256
         canonical_json = json.dumps(

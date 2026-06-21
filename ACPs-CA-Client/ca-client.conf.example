@@ -1,0 +1,34 @@
+# CA Client 示例配置
+
+# CA 服务基础地址。
+# 用于访问 ACME 目录、申请证书、下载信任包和 CRL 等 CA 相关接口。
+CA_SERVER_BASE_URL = https://ca.example.com/acps-atr-v2
+
+# 挑战服务基础地址。
+# 本客户端会利用此URL向 Challenge Server 提交验证数据，以便 CA Server 去 Challenge Server 获取验证数据进行验证。
+CHALLENGE_SERVER_BASE_URL = https://challenge.example.com/acps-atr-v2
+
+# 挑战部署 Mock 开关（开发/测试环境）。
+# 设为 true 时，跳过向 Challenge Server 部署 token 的步骤。
+# 需配合 CA Server 的 HTTP01_VALIDATION_MOCK=true 使用。
+CHALLENGE_DEPLOY_MOCK = false
+
+# ACME 账户私钥路径。
+# 本客户端会用它标识账户；如果文件不存在，首次申请证书时会自动生成。
+ACCOUNT_KEY_PATH = ./private/account.key
+
+# 证书输出目录。
+# 新签发的证书默认保存在这里，下载的 CRL 也默认输出到该目录。
+CERTS_DIR = ./certs
+
+# Agent 私钥目录。
+# 每个 AIC 对应的业务私钥会生成并保存在这个目录下。
+PRIVATE_KEYS_DIR = ./private
+
+# CSR 输出目录。
+# 为各个 AIC 生成的证书签名请求文件会保存在这里。
+CSR_DIR = ./csr
+
+# 本地信任包文件路径。
+# `update-trust-bundle` 命令会把 CA 下发的 trust bundle 保存到这里。
+TRUST_BUNDLE_PATH = ./certs/trust-bundle.pem

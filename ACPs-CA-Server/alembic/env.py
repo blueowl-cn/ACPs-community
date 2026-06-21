@@ -16,6 +16,8 @@ from app.core.config import get_db_url  # noqa: E402
 # 导入所有模型以确保它们被注册到SQLModel.metadata
 from app.acme.models import *  # noqa: E402,F403,F401
 from app.common.certificate_model import *  # noqa: E402,F403,F401
+from app.common.crl_model import *  # noqa: E402,F403,F401
+from app.common.ocsp_model import *  # noqa: E402,F403,F401
 
 # this is the Alembic Config object, which provides
 # access to the values within the .ini file in use.

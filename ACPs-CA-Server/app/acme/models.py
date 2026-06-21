@@ -119,6 +119,7 @@ class AcmeOrder(SQLModel, table=True):
     # 关系
     account: AcmeAccount = Relationship(back_populates="orders")
     authorizations_rel: List["AcmeAuthorization"] = Relationship(back_populates="order")
+    certificates: List["AcmeCertificate"] = Relationship(back_populates="order")
 
 
 class AcmeAuthorization(SQLModel, table=True):
@@ -210,6 +211,8 @@ class AcmeCertificate(SQLModel, table=True):
     # 创建和更新时间
     created_at: datetime = Field(default_factory=beijing_now)
     updated_at: Optional[datetime] = Field(default=None)
+
+    order: "AcmeOrder" = Relationship(back_populates="certificates")
 
 
 class AcmeNonce(SQLModel, table=True):

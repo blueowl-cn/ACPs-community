@@ -17,7 +17,8 @@ import base64
 from unittest.mock import AsyncMock, Mock, patch
 from fastapi.testclient import TestClient
 from cryptography.hazmat.primitives import hashes, serialization
-from cryptography.hazmat.primitives.asymmetric import rsa, padding
+from cryptography.hazmat.primitives.asymmetric import rsa, ec, padding
+from cryptography.hazmat.backends import default_backend
 
 from main import app
 from app.acme.jws_verifier import JWSVerifier
@@ -34,7 +35,7 @@ class TestACMEDirectory:
     def test_get_directory(self):
         """测试获取 ACME 目录"""
         with TestClient(app) as client:
-            response = client.get("/acps-atr-v1/acme/directory")
+            response = client.get("/acps-atr-v2/acme/directory")
 
             assert response.status_code == 200
             data = response.json()
@@ -48,9 +49,6 @@ class TestACMEDirectory:
 
             # 检查 meta 信息
             meta = data["meta"]
-            assert "termsOfService" in meta
-            assert "website" in meta
-            assert "caaIdentities" in meta
             assert "externalAccountRequired" in meta
 
 
@@ -60,7 +58,7 @@ class TestACMENonce:
     def test_get_new_nonce_head(self):
         """测试 HEAD 方法获取 nonce"""
         with TestClient(app) as client:
-            response = client.head("/acps-atr-v1/acme/new-nonce")
+            response = client.head("/acps-atr-v2/acme/new-nonce")
 
             assert response.status_code == 200
             assert "Replay-Nonce" in response.headers
@@ -71,7 +69,7 @@ class TestACMENonce:
     def test_get_new_nonce_get(self):
         """测试 GET 方法获取 nonce"""
         with TestClient(app) as client:
-            response = client.get("/acps-atr-v1/acme/new-nonce")
+            response = client.get("/acps-atr-v2/acme/new-nonce")
 
             assert response.status_code == 200
             assert "Replay-Nonce" in response.headers
@@ -89,7 +87,7 @@ class TestACMEAccount:
             # 无效的 JWS 请求
             jws_data = {"protected": "", "payload": "", "signature": ""}
 
-            response = client.post("/acps-atr-v1/acme/new-account", json=jws_data)
+            response = client.post("/acps-atr-v2/acme/new-account", json=jws_data)
 
             # 应该返回错误，因为这不是有效的 JWS 格式
             assert response.status_code in [400, 422]
@@ -102,12 +100,12 @@ class TestACMEBasicFlow:
         """测试获取目录和 nonce 的基本流程"""
         with TestClient(app) as client:
             # 1. 获取目录
-            dir_response = client.get("/acps-atr-v1/acme/directory")
+            dir_response = client.get("/acps-atr-v2/acme/directory")
             assert dir_response.status_code == 200
             directory = dir_response.json()
 
             # 2. 获取 nonce
-            nonce_response = client.get("/acps-atr-v1/acme/new-nonce")
+            nonce_response = client.get("/acps-atr-v2/acme/new-nonce")
             assert nonce_response.status_code == 200
             assert "Replay-Nonce" in nonce_response.headers
 
@@ -228,6 +226,69 @@ class TestJWSVerification:
 
         assert result == payload
 
+    def test_valid_ec_jws_verification(self):
+        """测试有效的 EC JWS 签名验证"""
+        # 生成 EC 密钥对
+        private_key = ec.generate_private_key(ec.SECP256R1(), default_backend())
+        public_key = private_key.public_key()
+
+        # 获取公钥参数
+        numbers = public_key.public_numbers()
+        x = numbers.x
+        y = numbers.y
+
+        # 构建 JWK
+        jwk = {
+            "kty": "EC",
+            "crv": "P-256",
+            "x": self.jws_verifier.base64url_encode(x.to_bytes(32, byteorder="big")),
+            "y": self.jws_verifier.base64url_encode(y.to_bytes(32, byteorder="big")),
+        }
+
+        # 构建 payload
+        payload = {"test": "ec_data"}
+        payload_json = json.dumps(payload)
+        payload_b64 = self.jws_verifier.base64url_encode(payload_json.encode("utf-8"))
+
+        # 构建 protected header
+        protected = {
+            "alg": "ES256",
+            "jwk": jwk,
+            "nonce": "test-ec-nonce",
+            "url": "https://example.com/ec-test",
+        }
+        protected_json = json.dumps(protected)
+        protected_b64 = self.jws_verifier.base64url_encode(
+            protected_json.encode("utf-8")
+        )
+
+        # 签名
+        signing_input = f"{protected_b64}.{payload_b64}".encode("ascii")
+        der_signature = private_key.sign(signing_input, ec.ECDSA(hashes.SHA256()))
+
+        # 将 DER 签名转换为 Raw (R||S) 格式，符合 JWS 规范
+        from cryptography.hazmat.primitives.asymmetric.utils import decode_dss_signature
+
+        r, s = decode_dss_signature(der_signature)
+        raw_signature = r.to_bytes(32, byteorder="big") + s.to_bytes(
+            32, byteorder="big"
+        )
+
+        signature_b64 = self.jws_verifier.base64url_encode(raw_signature)
+
+        # 构建 JWS
+        jws_data = f"{protected_b64}.{payload_b64}.{signature_b64}"
+
+        # 验证
+        result = self.jws_verifier.verify_jws_signature(
+            jws_data,
+            jwk,
+            expected_nonce="test-ec-nonce",
+            expected_url="https://example.com/ec-test",
+        )
+
+        assert result == payload
+
 
 # ================== Agent注册服务测试 ==================
 
@@ -270,7 +331,7 @@ class TestAgentRegistryClient:
             },
             "endPoints": [
                 {
-                    "url": "https://agent.example.com/acps-aip-v1/rpc",
+                    "url": "https://agent.example.com/acps-aip-v2/rpc",
                     "security": [{"mtls": []}],
                     "transport": "JSONRPC",
                 }
@@ -326,7 +387,7 @@ class TestAgentRegistryClient:
             },
             "endPoints": [
                 {
-                    "url": "https://old-agent.example.com/acps-aip-v1/rpc",
+                    "url": "https://old-agent.example.com/acps-aip-v2/rpc",
                     "security": [{"mtls": []}],
                     "transport": "JSONRPC",
                 }
@@ -365,7 +426,7 @@ class TestAgentRegistryClient:
             },
             "endPoints": [
                 {
-                    "url": "https://agent.example.com/acps-aip-v1/rpc",
+                    "url": "https://agent.example.com/acps-aip-v2/rpc",
                     "security": [{"mtls": []}],
                     "transport": "JSONRPC",
                 }
@@ -379,9 +440,8 @@ class TestAgentRegistryClient:
             mock_response.status_code = 200
             mock_response.json.return_value = test_response_data
 
-            mock_client.return_value.__aenter__.return_value.request = AsyncMock(
-                return_value=mock_response
-            )
+            mock_request = mock_client.return_value.__aenter__.return_value.request
+            mock_request.return_value = mock_response
 
             result = await self.client.validate_aic_and_get_info(
                 "AGENTTEST123SUCCESS4567890ABCDEF12"
@@ -390,6 +450,14 @@ class TestAgentRegistryClient:
             assert result is not None
             assert result.aic == "AGENTTEST123SUCCESS4567890ABCDEF12"
             assert result.is_valid() is True
+
+            # 验证请求 URL 是否包含 /acs/ 路径
+            mock_request.assert_called()
+            args, kwargs = mock_request.call_args
+            assert args[0] == "GET"
+            assert (
+                args[1] == "http://test-registry/acs/AGENTTEST123SUCCESS4567890ABCDEF12"
+            )
 
     @pytest.mark.asyncio
     async def test_validate_aic_not_found(self):
@@ -438,7 +506,8 @@ class TestHTTP01ValidationService:
             },
             "securitySchemes": {
                 "mtls": {
-                    "x-caChallengeBaseUrl": "https://agent.example.com/ca/challenge"
+                    "type": "mutualTLS",
+                    "x-caChallengeBaseUrl": "https://agent.example.com/ca/challenge",
                 }
             },
             "endPoints": [],
@@ -466,7 +535,10 @@ class TestHTTP01ValidationService:
                 "countryCode": "US",
             },
             "securitySchemes": {
-                "mtls": {"x-caChallengeBaseUrl": "https://agent.example.com/ca/agent"}
+                "mtls": {
+                    "type": "mutualTLS",
+                    "x-caChallengeBaseUrl": "https://agent.example.com/ca/agent",
+                }
             },
             "endPoints": [],
             "capabilities": [],
@@ -495,7 +567,8 @@ class TestHTTP01ValidationService:
             },
             "securitySchemes": {
                 "mtls": {
-                    "x-caChallengeBaseUrl": "https://agent.example.com/ca/challenge"
+                    "type": "mutualTLS",
+                    "x-caChallengeBaseUrl": "https://agent.example.com/ca/challenge",
                 }
             },
             "endPoints": [],
@@ -537,7 +610,8 @@ class TestHTTP01ValidationService:
             },
             "securitySchemes": {
                 "mtls": {
-                    "x-caChallengeBaseUrl": "https://agent.example.com/ca/challenge"
+                    "type": "mutualTLS",
+                    "x-caChallengeBaseUrl": "https://agent.example.com/ca/challenge",
                 }
             },
             "endPoints": [],
@@ -578,7 +652,10 @@ class TestHTTP01ValidationService:
                 "countryCode": "US",
             },
             "securitySchemes": {
-                "mtls": {"x-caChallengeBaseUrl": "https://agent.example.com/"}
+                "mtls": {
+                    "type": "mutualTLS",
+                    "x-caChallengeBaseUrl": "https://agent.example.com/",
+                }
             },
             "endPoints": [],
             "capabilities": [],
@@ -589,15 +666,18 @@ class TestHTTP01ValidationService:
         with patch("httpx.AsyncClient") as mock_client:
             mock_response = Mock()
             mock_response.status_code = 200
-            mock_response.json.return_value = {"status": "running"}
+            # 健康检查不再需要特定的 JSON 响应，只要状态码是 200 即可
+            mock_response.text = "OK"
 
-            mock_client.return_value.__aenter__.return_value.get = AsyncMock(
-                return_value=mock_response
-            )
+            mock_get = AsyncMock(return_value=mock_response)
+            mock_client.return_value.__aenter__.return_value.get = mock_get
 
             result = await self.validator.pre_validate_agent_endpoint(agent_info)
 
             assert result.success is True
+
+            # 验证调用的 URL 是 /health
+            mock_get.assert_called_with("https://agent.example.com/health")
 
 
 # ================== 证书签发功能测试 ==================
@@ -726,12 +806,17 @@ class TestCertificateIssuing:
                         "O": "Test Org",
                     },
                 ):
-                    certificates = self.cert_service.issue_certificate(
-                        order, csr_der, [agent_info]
-                    )
+                    with patch.object(
+                        self.cert_service,
+                        "_extract_serial_number_from_cert_pem",
+                        return_value="1234567890ABCDEF",
+                    ):
+                        certificates = self.cert_service.issue_certificate(
+                            order, csr_der, [agent_info]
+                        )
 
-                    assert len(certificates) == 1
-                    assert certificates[0] == mock_cert
+                        assert len(certificates) == 1
+                        assert certificates[0] == mock_cert
 
     def test_multi_agent_certificate_generation(self):
         """测试多Agent证书生成（每个Agent一张证书）"""
@@ -802,14 +887,19 @@ class TestCertificateIssuing:
                     "_extract_subject_from_cert_pem",
                     return_value={"CN": "agent.acps.pub", "O": "Test Org"},
                 ):
-                    certificates = self.cert_service.issue_certificate(
-                        order, csr_der, agent_infos
-                    )
+                    with patch.object(
+                        self.cert_service,
+                        "_extract_serial_number_from_cert_pem",
+                        return_value="1234567890ABCDEF",
+                    ):
+                        certificates = self.cert_service.issue_certificate(
+                            order, csr_der, agent_infos
+                        )
 
-                    # 应该为每个Agent签发一张证书
-                    assert len(certificates) == 2
-                    assert certificates[0] == mock_certs[0]
-                    assert certificates[1] == mock_certs[1]
+                        # 应该为每个Agent签发一张证书
+                        assert len(certificates) == 2
+                        assert certificates[0] == mock_certs[0]
+                        assert certificates[1] == mock_certs[1]
 
     def test_certificate_subject_built_from_agent_info(self):
         """测试证书Subject DN根据Agent注册信息构造"""

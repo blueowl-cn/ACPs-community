@@ -28,6 +28,62 @@ def get_crl_service(db: Session = Depends(get_session)) -> CRLService:
 
 
 @router.get(
+    "",
+    summary="下载CRL",
+    description="下载证书吊销列表",
+    response_class=Response,
+)
+async def download_crl(
+    format: str = Query(
+        "der", pattern="^(pem|der)$", description="CRL格式 (pem 或 der)"
+    ),
+    service: CRLService = Depends(get_crl_service),
+):
+    """
+    下载证书吊销列表
+
+    权限级别: public
+    """
+    current_crl = service.get_current_crl()
+    if not current_crl:
+        # 如果没有当前CRL，尝试生成一个新的
+        try:
+            current_crl = service.generate_new_crl(issuer="Agent CA")
+        except Exception as e:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Failed to generate CRL: {str(e)}",
+            )
+
+    if format == "pem":
+        return Response(
+            content=current_crl.crl_pem,
+            media_type="application/x-pem-file",
+            headers={
+                "Content-Disposition": 'attachment; filename="agent-ca.crl"',
+                "Cache-Control": "max-age=3600",
+                "Last-Modified": current_crl.this_update.strftime(
+                    "%a, %d %b %Y %H:%M:%S GMT"
+                ),
+                "ETag": f'"{current_crl.version}"',
+            },
+        )
+    else:
+        return Response(
+            content=current_crl.crl_der,
+            media_type="application/pkix-crl",
+            headers={
+                "Content-Disposition": 'attachment; filename="agent-ca.crl"',
+                "Cache-Control": "max-age=3600",
+                "Last-Modified": current_crl.this_update.strftime(
+                    "%a, %d %b %Y %H:%M:%S GMT"
+                ),
+                "ETag": f'"{current_crl.version}"',
+            },
+        )
+
+
+@router.get(
     "/current",
     summary="获取当前CRL",
     description="获取最新的证书撤销列表",

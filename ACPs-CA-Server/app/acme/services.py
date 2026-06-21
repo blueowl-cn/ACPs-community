@@ -402,10 +402,13 @@ class CertificateService:
             # 为单个Agent生成证书
             cert_pem = self._generate_certificate_for_agent(csr, agent_id, agent_info)
 
+            # 从生成的证书中提取序列号，确保数据库记录与实际证书一致
+            serial_number = self._extract_serial_number_from_cert_pem(cert_pem)
+
             # 创建证书记录
             cert_data = CertificateCreate(
                 order_id=order.id,
-                serial_number=self._generate_serial_number(),
+                serial_number=serial_number,
                 certificate_pem=cert_pem,
                 subject=self._extract_subject_from_cert_pem(cert_pem),
                 not_before=beijing_now(),
@@ -568,6 +571,25 @@ class CertificateService:
                 error_msg=f"Certificate signing failed for agent {agent_id}: {str(e)}",
             )
 
+    def _extract_serial_number_from_cert_pem(self, cert_pem: str) -> str:
+        """从PEM格式证书中提取序列号
+
+        Args:
+            cert_pem: PEM格式的证书字符串
+
+        Returns:
+            str: 16进制格式的序列号
+        """
+        try:
+            cert = x509.load_pem_x509_certificate(cert_pem.encode(), default_backend())
+            return format(cert.serial_number, "x").upper()
+        except Exception as e:
+            raise AcmeException(
+                status_code=500,
+                error_name=AcmeError.SERVER_INTERNAL,
+                error_msg=f"Failed to extract serial number from certificate: {str(e)}",
+            )
+
     def _extract_subject_from_csr(
         self, csr: x509.CertificateSigningRequest
     ) -> Dict[str, Any]:
@@ -646,6 +668,8 @@ class CertificateService:
 
         # 同时在Certificate表中创建记录，用于证书管理和批量吊销
         if cert_data.aic:
+            from app.common.certificate_version import get_next_certificate_version
+            
             common_cert = Certificate(
                 certificate_type=CertificateType.AGENT,  # Agent证书类型
                 serial_number=cert_data.serial_number,
@@ -658,6 +682,7 @@ class CertificateService:
                 ),
                 expires_at=cert_data.not_after,
                 aic=cert_data.aic,  # 设置AIC字段用于批量查询
+                version=get_next_certificate_version(self.session, cert_data.aic),
             )
             self.session.add(common_cert)
 

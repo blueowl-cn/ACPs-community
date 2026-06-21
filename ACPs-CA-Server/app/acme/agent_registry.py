@@ -191,9 +191,9 @@ class AgentRegistryClient:
 
         # 真实模式 - 调用 Registry Server API
         try:
-            # 构造 URL: {REGISTRY_SERVER_BASE_URL}/{aic}
+            # 构造 URL: {REGISTRY_SERVER_BASE_URL}/acs/{aic}
             base_url = self.base_url.rstrip("/")
-            url = f"{base_url}/{aic}"
+            url = f"{base_url}/acs/{aic}"
             headers = self._get_auth_headers()
 
             response = await self._make_request_with_retry("GET", url, headers=headers)

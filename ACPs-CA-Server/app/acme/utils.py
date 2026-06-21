@@ -9,7 +9,8 @@ import json
 import hashlib
 from typing import Dict, Any, Optional
 from cryptography.hazmat.primitives import hashes
-from cryptography.hazmat.primitives.asymmetric import rsa, padding
+from cryptography.hazmat.primitives.asymmetric import rsa, ec, padding
+from cryptography.hazmat.backends import default_backend
 
 from .exception import AcmeException, AcmeError
 
@@ -31,29 +32,61 @@ def base64url_encode(data: bytes) -> str:
 
 def jwk_to_public_key(jwk: Dict[str, Any]):
     """将 JWK 转换为 cryptography 公钥对象"""
-    if jwk.get("kty") != "RSA":
+    kty = jwk.get("kty")
+
+    if kty == "RSA":
+        try:
+            # 解码 RSA 参数
+            n = int.from_bytes(base64url_decode(jwk["n"]), byteorder="big")
+            e = int.from_bytes(base64url_decode(jwk["e"]), byteorder="big")
+
+            # 创建公钥
+            public_numbers = rsa.RSAPublicNumbers(e, n)
+            public_key = public_numbers.public_key(backend=default_backend())
+
+            return public_key
+        except Exception as e:
+            raise AcmeException(
+                status_code=400,
+                error_name=AcmeError.BAD_SIGNATURE,
+                error_msg=f"Invalid RSA JWK: {str(e)}",
+            )
+
+    elif kty == "EC":
+        try:
+            crv = jwk["crv"]
+            x = int.from_bytes(base64url_decode(jwk["x"]), byteorder="big")
+            y = int.from_bytes(base64url_decode(jwk["y"]), byteorder="big")
+
+            if crv == "P-256":
+                curve = ec.SECP256R1()
+            elif crv == "P-384":
+                curve = ec.SECP384R1()
+            elif crv == "P-521":
+                curve = ec.SECP521R1()
+            else:
+                raise AcmeException(
+                    status_code=400,
+                    error_name=AcmeError.BAD_SIGNATURE,
+                    error_msg=f"Unsupported curve: {crv}",
+                )
+
+            public_numbers = ec.EllipticCurvePublicNumbers(x, y, curve)
+            return public_numbers.public_key(backend=default_backend())
+        except AcmeException:
+            raise
+        except Exception as e:
+            raise AcmeException(
+                status_code=400,
+                error_name=AcmeError.BAD_SIGNATURE,
+                error_msg=f"Invalid EC JWK: {str(e)}",
+            )
+
+    else:
         raise AcmeException(
             status_code=400,
             error_name=AcmeError.BAD_SIGNATURE,
-            error_msg="Only RSA keys are supported",
-        )
-
-    try:
-        # 解码 RSA 参数
-        n = int.from_bytes(base64url_decode(jwk["n"]), byteorder="big")
-        e = int.from_bytes(base64url_decode(jwk["e"]), byteorder="big")
-
-        # 创建公钥
-        public_numbers = rsa.RSAPublicNumbers(e, n)
-        public_key = public_numbers.public_key()
-
-        return public_key
-
-    except Exception as exc:
-        raise AcmeException(
-            status_code=400,
-            error_name=AcmeError.BAD_SIGNATURE,
-            error_msg=f"Invalid JWK: {str(exc)}",
+            error_msg=f"Unsupported key type: {kty}",
         )
 
 

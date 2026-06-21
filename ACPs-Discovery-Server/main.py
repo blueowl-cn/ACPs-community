@@ -4,14 +4,16 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-
+from app.discovery.exception import ADPException 
+from acps_sdk.adp import ErrorDetail, DiscoveryResponse
 from app.core.config import settings
 from app.core.base_exception import BaseException as AppBaseException
 from app.core.database import create_db_and_tables, close_db
 from app.core.utils import ColoredFormatter
 from app.sync.client import start_drc_sync, stop_drc_sync
-from app.discovery.api import router as discovery_router
+from app.discovery.discovery_api import router as discovery_router
 from app.sync.api import router as drc_router
+from app.discovery.discovery_api import start_health_check_task, stop_health_check_task
 
 
 # 配置 logging
@@ -45,6 +47,13 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.error(f"DRC 同步服务启动失败: {e}")
 
+    try:
+        await start_health_check_task()
+        logger.info("转发服务器健康检查任务启动成功")
+    except Exception as e:
+        logger.error(f"转发服务器健康检查任务启动失败: {e}")
+
+
     yield
 
     # 关闭：停止 DRC 同步服务和关闭数据库连接
@@ -67,30 +76,33 @@ app = FastAPI(
     version=settings.APP_VERSION,
     docs_url="/docs",
     redoc_url="/redoc",
+    root_path=settings.APP_ROOT_PATH,
     lifespan=lifespan,
 )
 
-
-# 添加自定义异常处理器
-@app.exception_handler(AppBaseException)
-async def my_exception_handler(request: Request, exc: AppBaseException):
-    # 关键：先记录
-    logger.exception("AppBaseException at %s %s: %s", request.method, request.url, exc.error_msg)
-    return JSONResponse(
-        status_code=exc.status_code,
-        content=exc.to_dict(),
+@app.exception_handler(ADPException)
+async def adp_exception_handler(request: Request, exc: ADPException):
+    logger.error("ADPException caught: %s", exc, exc_info=True)
+    err: ErrorDetail = exc.error_data
+    http_status = err.code // 100
+    if http_status not in (307, 400, 401, 429, 500):
+        http_status = 500
+    error_response = DiscoveryResponse.failure(
+        code=err.code,
+        message=err.message,
+        data=err.data,
     )
+    return JSONResponse(status_code=http_status, content=error_response.to_dict())
 
-
-# 添加的通用报错反馈
-@app.exception_handler(Exception)            
+@app.exception_handler(Exception)
 async def universal_exception_handler(request: Request, exc: Exception):
     logger.exception("Unhandled exception at %s %s", request.method, request.url)
-    # 返回给前端不要泄露细节
-    return JSONResponse(
-        status_code=500,
-        content={"detail": "Internal server error"},
+    error_response = DiscoveryResponse.failure(
+        code=50001,
+        message="InternalError",
+        data="An unexpected server error occurred.",
     )
+    return JSONResponse(status_code=500, content=error_response.to_dict())
 
 # 添加 CORS 中间件
 app.add_middleware(
@@ -103,7 +115,7 @@ app.add_middleware(
 
 # 包含路由
 app.include_router(
-    discovery_router, prefix="/api/discovery", tags=["用户使用的发现API"]
+    discovery_router, prefix="/acps-adp-v2", tags=["用户使用的发现API"]
 )
 app.include_router(
     drc_router, prefix="/admin/drc", tags=["数据同步drc的管理维护测试用API"]

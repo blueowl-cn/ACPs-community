@@ -32,6 +32,13 @@ class CertificateService:
         Returns:
             Certificate: 创建的证书对象
         """
+        # 若是带 AIC 的证书且未显式指定 version，则按 AIC 自动递增版本号
+        aic = certificate_data.get("aic")
+        if aic and certificate_data.get("version") is None:
+            from .certificate_version import get_next_certificate_version
+
+            certificate_data["version"] = get_next_certificate_version(self.db, aic)
+
         # 生成序列号
         serial_number = self._generate_serial_number()
 

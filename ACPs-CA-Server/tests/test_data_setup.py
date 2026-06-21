@@ -180,7 +180,7 @@ def cleanup_test_data(db_session: Session):
             WHERE
                 -- 检查序列号模式：以0001-9999开头的16进制数字
                 (LENGTH(serial_number) >= 4 AND
-                 UPPER(SUBSTR(serial_number, 1, 4)) GLOB '[0-9A-F][0-9A-F][0-9A-F][0-9A-F]')
+                 UPPER(SUBSTR(serial_number, 1, 4)) ~ '^[0-9A-F]{4}$')
                 OR
                 -- 检查序列号前缀：TEST, REVOKED, EXPIRED
                 (serial_number LIKE 'TEST%' OR
@@ -197,15 +197,15 @@ def cleanup_test_data(db_session: Session):
 
         print(f"删除了 {result.rowcount} 个测试证书")
 
-        # 4. 删除所有OCSP请求记录
-        ocsp_requests = db_session.exec(select(OCSPRequest)).all()
-        for req in ocsp_requests:
-            db_session.delete(req)
-
-        # 5. 删除所有OCSP响应记录
+        # 4. 删除所有OCSP响应记录（先删响应再删请求，遵守外键约束）
         ocsp_responses = db_session.exec(select(OCSPResponse)).all()
         for resp in ocsp_responses:
             db_session.delete(resp)
+
+        # 5. 删除所有OCSP请求记录
+        ocsp_requests = db_session.exec(select(OCSPRequest)).all()
+        for req in ocsp_requests:
+            db_session.delete(req)
 
         # 6. 删除测试OCSP响应器
         responders = db_session.exec(select(OCSPResponder)).all()

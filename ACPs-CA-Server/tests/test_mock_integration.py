@@ -155,8 +155,8 @@ class TestMockIntegration:
             # 由于国家和状态的选项有限，可能会有重复，但组织名称应该有较好的随机性
 
     @pytest.mark.asyncio
-    async def test_http01_validation_randomness(self):
-        """测试HTTP-01验证的随机性"""
+    async def test_http01_validation_consistency(self):
+        """测试HTTP-01验证的一致性（Mock模式下始终返回成功）"""
         with patch("app.acme.http01_validator.get_settings") as mock_settings:
             # Mock配置
             mock_settings.return_value.http01_validation_timeout = 30
@@ -180,14 +180,11 @@ class TestMockIntegration:
                 results.append(result.success)
                 response_times.append(result.response_time)
 
-            # 验证结果有变化（不是全部成功或全部失败）
-            success_count = sum(results)
-            assert (
-                0 < success_count < len(results)
-            ), f"验证结果应该有随机性，成功次数: {success_count}/{len(results)}"
+            # Mock模式下所有验证结果应该一致为成功
+            assert all(results), f"Mock模式下验证结果应该全部成功，实际: {results}"
 
-            # 验证响应时间有变化
-            assert len(set(response_times)) > 1, "响应时间应该有随机性"
+            # 验证响应时间有变化（响应时间仍然是随机生成的）
+            assert len(set(response_times)) > 1, "响应时间应该有变化"
 
     def test_mock_data_generator_agent_info(self):
         """测试MockDataGenerator生成Agent信息的功能"""
@@ -255,24 +252,30 @@ class TestMockIntegration:
             len(unique_organizations) > 1
         ), f"应该生成不同的组织名称，实际: {organizations}"
 
-    def test_mock_success_rates(self):
-        """测试Mock功能的成功率"""
+    def test_mock_consistent_results(self):
+        """测试Mock功能始终返回成功结果"""
         generator = MockDataGenerator()
 
-        # 测试端点验证成功率（应该约80%）
+        # 测试端点验证始终成功
         endpoint_results = [
             generator.generate_endpoint_validation_result() for _ in range(100)
         ]
-        success_rate = sum(endpoint_results) / len(endpoint_results)
-        assert (
-            0.6 <= success_rate <= 1.0
-        ), f"端点验证成功率应该在合理范围内: {success_rate}"
+        assert all(endpoint_results), "端点验证Mock应该始终返回成功"
 
-        # 测试注册结果成功率（应该约85%）
+        # 测试注册结果始终成功
         registration_results = [
             generator.generate_registration_result() for _ in range(100)
         ]
-        reg_success_rate = sum(registration_results) / len(registration_results)
-        assert (
-            0.7 <= reg_success_rate <= 1.0
-        ), f"注册成功率应该在合理范围内: {reg_success_rate}"
+        assert all(registration_results), "注册Mock应该始终返回成功"
+
+        # 测试通知结果始终成功
+        notification_results = [
+            generator.generate_notification_result() for _ in range(100)
+        ]
+        assert all(notification_results), "通知Mock应该始终返回成功"
+
+        # 测试所有权验证始终成功
+        ownership_results = [
+            generator.generate_ownership_verification_result() for _ in range(100)
+        ]
+        assert all(ownership_results), "所有权验证Mock应该始终返回成功"

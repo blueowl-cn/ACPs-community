@@ -249,7 +249,98 @@ class CertificateManagementService(CertificateService):
                     revoked_count += 1
             except Exception as e:
                 # 记录错误但继续处理其他证书
-                print(f"Failed to revoke certificate {cert.id}: {e}")
+                print(f"Failed to revoke certificate {cert.id}: {e} - services.py:252")
                 continue
 
         return revoked_count
+    
+    def retrieve_certificate_by_aic_and_version(
+        self, aic: str, version: Optional[int]
+    ) -> Certificate:
+        """
+        根据 AIC 和版本号检索证书
+
+        Args:
+            aic: Agent Identity Code
+            version: 版本号，如果为 None 则检索最新有效证书
+
+        Returns:
+            str: 证书内容（PEM 格式）
+
+        Raises:
+            ValueError: 如果未找到符合条件的证书
+        """
+        from sqlmodel import select
+        from app.common import Certificate, CertificateStatus
+
+        statement = select(Certificate).where(
+            Certificate.aic == aic,
+        )
+
+        if version:
+            statement = statement.where(Certificate.version == version)
+        else:
+            statement = statement.where(Certificate.status == CertificateStatus.VALID)
+
+        statement = statement.order_by(Certificate.created_at.desc())
+
+        certificate = self.db.exec(statement).first()
+
+        if not certificate:
+            raise ValueError("Certificate not found for the given AIC and version")
+
+        return certificate
+    
+    def retrieve_certificate_by_cert(self, cert_pem: str)  -> Certificate:
+        """
+        从证书PEM中提取AIC
+
+        Args:
+            cert_pem: 证书PEM格式字符串
+
+        Returns:
+            Certificate: 证书对象
+        """
+        from sqlmodel import select
+        from app.common import Certificate, CertificateStatus
+        from sqlalchemy import func
+        from urllib.parse import unquote
+        
+        try:
+            # cert_pem 可能来自 URL query（出现 %0A、%20 等），先做一次 URL 解码。
+            # 注意：不要用 unquote_plus，避免把 PEM/base64 里的 '+' 误当空格。
+            cert_pem = unquote(cert_pem or "")
+
+            # 1) 快路径：精确匹配（最快）
+            statement = select(Certificate).where(Certificate.certificate_pem == cert_pem)
+            certificate = self.db.exec(statement).first()
+            if certificate:
+                return certificate
+
+            # 2) 兼容：入参可能把换行替换成空格/混用 \r\n，忽略所有空白后再匹配。
+            normalized_input = "".join(cert_pem.split())
+            statement = select(Certificate).where(
+                func.regexp_replace(
+                    Certificate.certificate_pem,
+                    r"\\s+",
+                    "",
+                    "g",
+                )
+                == normalized_input
+            )
+            certificate = self.db.exec(statement).first()
+            if certificate:
+                return certificate
+
+            # 3) 回退：在不支持 regexp_replace 的数据库上（例如 SQLite），用 Python 做归一化匹配。
+            # 数据量很大时不建议使用该路径。
+            candidates = self.db.exec(select(Certificate)).all()
+            for item in candidates:
+                if "".join((item.certificate_pem or "").split()) == normalized_input:
+                    return item
+
+            raise ValueError("Certificate not found for the given cert_pem")
+        except Exception as e:
+            print(f"Error retrieving certificate by cert: {e} - services.py:344")
+            raise ValueError(f"Error retrieving certificate by cert: {e}")
+

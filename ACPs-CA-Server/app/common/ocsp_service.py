@@ -48,25 +48,46 @@ class OCSPService:
             request_id = hashlib.sha256(request_der).hexdigest()
 
             # 获取证书序列号和签发者信息
-            single_request = ocsp_request.tbs_request.request_list[0]
-            cert_id = single_request.req_cert
+            if hasattr(ocsp_request, "serial_number"):
+                # cryptography>=43 exposes request fields directly via the OCSPRequest object
+                serial_number_int = ocsp_request.serial_number
+                serial_number = str(serial_number_int)
+                issuer_key_hash_bytes = ocsp_request.issuer_key_hash
+                issuer_name_hash_bytes = ocsp_request.issuer_name_hash
+                issuer_key_hash = issuer_key_hash_bytes.hex()
+                issuer_name_hash = issuer_name_hash_bytes.hex()
+                hash_algorithm = ocsp_request.hash_algorithm.name
+            else:
+                # Fallback for legacy versions that still expose tbs_request
+                single_request = ocsp_request.tbs_request.request_list[0]
+                cert_id = single_request.req_cert
+                serial_number_int = cert_id.serial_number
+                serial_number = str(serial_number_int)
+                issuer_key_hash_bytes = cert_id.issuer_key_hash
+                issuer_name_hash_bytes = cert_id.issuer_name_hash
+                issuer_key_hash = issuer_key_hash_bytes.hex()
+                issuer_name_hash = issuer_name_hash_bytes.hex()
+                hash_algorithm = cert_id.hash_algorithm.name
 
-            serial_number = str(cert_id.serial_number)
-            issuer_key_hash = cert_id.issuer_key_hash.hex()
-            issuer_name_hash = cert_id.issuer_name_hash.hex()
-            hash_algorithm = cert_id.hash_algorithm.name
+            existing_request = self.db.exec(
+                select(OCSPRequest).where(OCSPRequest.request_id == request_id)
+            ).first()
 
-            # 记录请求
-            request_record = OCSPRequest(
-                request_id=request_id,
-                certificate_serial=serial_number,
-                issuer_key_hash=issuer_key_hash,
-                issuer_name_hash=issuer_name_hash,
-                hash_algorithm=hash_algorithm,
-                client_ip=client_ip,
-                request_der=request_der,
-            )
-            self.db.add(request_record)
+            if existing_request:
+                request_record = existing_request
+                if client_ip and request_record.client_ip != client_ip:
+                    request_record.client_ip = client_ip
+            else:
+                request_record = OCSPRequest(
+                    request_id=request_id,
+                    certificate_serial=serial_number,
+                    issuer_key_hash=issuer_key_hash,
+                    issuer_name_hash=issuer_name_hash,
+                    hash_algorithm=hash_algorithm,
+                    client_ip=client_ip,
+                    request_der=request_der,
+                )
+                self.db.add(request_record)
 
             # 查询证书状态
             certificate = self.db.exec(
@@ -103,52 +124,65 @@ class OCSPService:
 
             response_builder = OCSPResponseBuilder()
 
-            if cert_status == OCSPResponseStatus.GOOD:
-                response_builder = response_builder.add_response(
-                    cert=(
-                        x509.load_pem_x509_certificate(
-                            certificate.certificate_pem.encode()
-                        )
-                        if certificate
-                        else None
-                    ),
-                    issuer=ca_manager.ca_cert,
-                    algorithm=hashes.SHA1(),
-                    cert_status=x509.ocsp.OCSPCertStatus.GOOD,
-                    this_update=now,
-                    next_update=next_update,
+            if certificate:
+                # 根据存储的证书生成响应
+                cert_obj = x509.load_pem_x509_certificate(
+                    certificate.certificate_pem.encode()
                 )
-            elif cert_status == OCSPResponseStatus.REVOKED:
-                response_builder = response_builder.add_response(
-                    cert=x509.load_pem_x509_certificate(
-                        certificate.certificate_pem.encode()
-                    ),
-                    issuer=ca_manager.ca_cert,
-                    algorithm=hashes.SHA1(),
-                    cert_status=x509.ocsp.OCSPCertStatus.REVOKED,
-                    this_update=now,
-                    next_update=next_update,
-                    revocation_time=revocation_time,
-                    revocation_reason=(
+                cert_status_value = (
+                    x509.ocsp.OCSPCertStatus.GOOD
+                    if cert_status == OCSPResponseStatus.GOOD
+                    else x509.ocsp.OCSPCertStatus.REVOKED
+                )
+                response_kwargs = {
+                    "cert": cert_obj,
+                    "issuer": ca_manager.ca_cert,
+                    "algorithm": hashes.SHA1(),
+                    "cert_status": cert_status_value,
+                    "this_update": now,
+                    "next_update": next_update,
+                    "revocation_time": None,
+                    "revocation_reason": None,
+                }
+
+                if cert_status == OCSPResponseStatus.REVOKED:
+                    response_kwargs["revocation_time"] = revocation_time or now
+                    response_kwargs["revocation_reason"] = (
                         x509.ReasonFlags.key_compromise
                         if revocation_reason == RevocationReason.KEY_COMPROMISE
                         else x509.ReasonFlags.unspecified
-                    ),
-                )
+                    )
+
+                response_builder = response_builder.add_response(**response_kwargs)
             else:
-                response_builder = response_builder.add_response(
-                    cert=None,
-                    issuer=ca_manager.ca_cert,
+                # UNKNOWN 状态：使用请求中的哈希值构造响应
+                response_builder = response_builder.add_response_by_hash(
+                    issuer_name_hash=issuer_name_hash_bytes,
+                    issuer_key_hash=issuer_key_hash_bytes,
+                    serial_number=serial_number_int,
                     algorithm=hashes.SHA1(),
                     cert_status=x509.ocsp.OCSPCertStatus.UNKNOWN,
                     this_update=now,
                     next_update=next_update,
+                    revocation_time=None,
+                    revocation_reason=None,
                 )
 
             # 加载响应器私钥
             responder_private_key = serialization.load_pem_private_key(
                 responder.private_key_pem.encode(), password=None
             )
+            responder_cert = x509.load_pem_x509_certificate(
+                responder.certificate_pem.encode()
+            )
+
+            # cryptography>=43 requires explicitly setting responder_id
+            response_builder = response_builder.responder_id(
+                x509.ocsp.OCSPResponderEncoding.HASH, responder_cert
+            )
+
+            # Include responder certificate to help clients build the chain
+            response_builder = response_builder.certificates([responder_cert])
 
             # 签名响应
             ocsp_response = response_builder.sign(
@@ -171,12 +205,11 @@ class OCSPService:
                 revocation_time=revocation_time,
                 revocation_reason=revocation_reason,
                 responder_id=responder.name,
-                responder_key_hash=hashlib.sha1(
-                    ca_manager.ca_cert.public_key().public_bytes(
-                        encoding=serialization.Encoding.DER,
-                        format=serialization.PublicFormat.SubjectPublicKeyInfo,
-                    )
-                ).hexdigest(),
+                responder_key_hash=(
+                    ocsp_response.responder_key_hash.hex()
+                    if ocsp_response.responder_key_hash
+                    else None
+                ),
                 response_der=response_der,
                 response_size=len(response_der),
                 signature_algorithm="SHA256withRSA",

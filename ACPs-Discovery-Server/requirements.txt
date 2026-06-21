@@ -36,3 +36,4 @@ jieba==0.42.1
 aiohttp==3.12.15
 networkx==3.4.2
 openai>=1.0.0
+-e ../acps-sdk

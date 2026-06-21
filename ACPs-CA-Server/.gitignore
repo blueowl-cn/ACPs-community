@@ -10,6 +10,7 @@ build/
 
 # Virtual environments
 venv/
+.venv/
 env/
 ENV/
 .env
@@ -55,3 +56,4 @@ nosetests.xml
 coverage.xml
 *.cover
 .hypothesis/
+.github/copilot-instructions.md

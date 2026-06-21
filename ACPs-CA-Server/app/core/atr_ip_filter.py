@@ -20,7 +20,7 @@ class ATRManagementIPFilterMiddleware(BaseHTTPMiddleware):
         super().__init__(app)
         self.settings = get_settings()
         # 默认的 ATR 管理路径前缀
-        self.atr_mgmt_paths = atr_mgmt_paths or ["/acps-atr-v1/mgmt"]
+        self.atr_mgmt_paths = atr_mgmt_paths or ["/acps-atr-v2/mgmt"]
 
     def _is_atr_management_path(self, path: str) -> bool:
         """检查是否为 ATR 管理路径"""

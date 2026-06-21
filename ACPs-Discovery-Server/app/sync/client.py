@@ -26,9 +26,8 @@ from .model import (
     OperationType,
 )
 from .exception import SyncException, SyncError
-from app.discovery.semantic_matcher import SemanticAgentMatcher
 from pathlib import Path
-
+from app.discovery.singleton import AgentDiscovery
 logger = logging.getLogger(__name__)
 
 
@@ -63,28 +62,27 @@ class DRCClient:
         # HTTP 客户端
         self.http_client: Optional[httpx.AsyncClient] = None
         # 语义匹配器实例
-        self.semantic_matcher: Optional[SemanticAgentMatcher] = None
-        self._init_semantic_matcher()
+        self.semantic_matcher = AgentDiscovery.semantic_matcher
 
-    def _init_semantic_matcher(self):
-        """初始化语义匹配器"""
-        try:
+    # def _init_semantic_matcher(self):
+    #     """初始化语义匹配器"""
+    #     try:
 
-            # 获取项目根目录路径
-            current_file = Path(__file__).resolve()
-            project_root = current_file.parent.parent  # /path/to/project/app
-            discovery_cache_dir = (
-                project_root / "discovery" / "semantic_cache"
-            )  # 缓存统一放到discovery目录下
-            self.semantic_matcher = SemanticAgentMatcher(
-                model_name=getattr(settings, "SEMANTIC_MODEL_NAME", "all-MiniLM-L6-v2"),
-                cache_dir=str(discovery_cache_dir),
-                similarity_threshold=getattr(settings, "SEMANTIC_SIMILARITY_THRESHOLD", 0.3)
-            )
-            logger.info(f"语义匹配器初始化成功，缓存目录: {discovery_cache_dir}")
-        except Exception as e:
-            logger.error(f"语义匹配器初始化失败: {e}")
-            self.semantic_matcher = None
+    #         # 获取项目根目录路径
+    #         current_file = Path(__file__).resolve()
+    #         project_root = current_file.parent.parent  # /path/to/project/app
+    #         discovery_cache_dir = (
+    #             project_root / "discovery" / "semantic_cache"
+    #         )  # 缓存统一放到discovery目录下
+    #         self.semantic_matcher = SemanticAgentMatcher(
+    #             model_name=getattr(settings, "SEMANTIC_MODEL_NAME", "all-MiniLM-L6-v2"),
+    #             cache_dir=str(discovery_cache_dir),
+    #             similarity_threshold=getattr(settings, "SEMANTIC_SIMILARITY_THRESHOLD", 0.3)
+    #         )
+    #         logger.info(f"语义匹配器初始化成功，缓存目录: {discovery_cache_dir}")
+    #     except Exception as e:
+    #         logger.error(f"语义匹配器初始化失败: {e}")
+    #         self.semantic_matcher = None
 
     async def _get_http_client(self) -> httpx.AsyncClient:
         """获取或创建 HTTP 客户端。"""

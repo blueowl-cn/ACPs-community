@@ -151,6 +151,14 @@ async def ocsp_request_post(
 
     权限级别: public - OCSP查询是公开服务，任何客户端都可以验证证书状态
     """
+    # 验证 Content-Type
+    content_type = request.headers.get("content-type", "")
+    if content_type != "application/ocsp-request":
+        raise HTTPException(
+            status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
+            detail="Invalid Content-Type. Expected application/ocsp-request",
+        )
+
     try:
         # 读取请求体
         request_der = await request.body()
@@ -204,9 +212,16 @@ async def ocsp_request_get(
         base64_request: Base64URL编码的OCSP请求
     """
     try:
-        # 解码Base64URL请求
-        # 注意：URL中的Base64编码可能会有填充问题
-        request_der = base64.urlsafe_b64decode(base64_request + "==")
+        # 解码Base64请求 (支持标准Base64和Base64URL)
+        # 补全填充
+        padding = 4 - (len(base64_request) % 4)
+        if padding != 4:
+            base64_request += "=" * padding
+
+        # 将Base64URL字符替换为标准Base64字符
+        base64_request_std = base64_request.replace("-", "+").replace("_", "/")
+
+        request_der = base64.b64decode(base64_request_std)
 
         # 获取客户端IP
         client_ip = request.client.host if request.client else None

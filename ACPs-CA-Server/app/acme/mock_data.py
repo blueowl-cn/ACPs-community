@@ -8,7 +8,8 @@ import random
 import secrets
 import time
 import string
-from datetime import datetime, timedelta
+import os
+from datetime import datetime, timedelta, timezone
 from typing import Dict, Any, Optional
 
 
@@ -98,11 +99,65 @@ class MockDataGenerator:
         """
         生成随机的 AIC (Agent Identity Code)
 
-        根据 ACPs-spec-AIC-v01.00 规范，AIC 由 32 位大写字母与数字组成
+        与 registry-server/app/utils/aic.py 的实现保持一致：
+
+        - AIC 为点分 10 段
+        - 前缀为 1.2.156.3088
+        - 第 10 段为 CRC-16/CCITT-FALSE 校验码的 Base36 编码（固定 4 位，大写，左侧 0 补齐）
+        - CRC 计算输入为 1~9 段（含 '.'）的 ASCII 字节流，末尾追加盐 AIC_CRC_SALT（十六进制字符串，默认 0x0000ABCD）
         """
-        # 生成 32 位大写字母和数字的组合
-        chars = string.ascii_uppercase + string.digits
-        return "".join(random.choice(chars) for _ in range(32))
+        base36 = string.digits + string.ascii_uppercase
+
+        def _base36_encode_fixed(num: int, length: int = 4) -> str:
+            if num < 0:
+                num = 0
+            if num == 0:
+                return "0".rjust(length, "0")
+            chars: list[str] = []
+            while num > 0:
+                num, rem = divmod(num, 36)
+                chars.append(base36[rem])
+            encoded = "".join(reversed(chars)).upper()
+            return encoded.rjust(length, "0")[-length:]
+
+        def _rand_seg(min_len: int, max_len: int) -> str:
+            length = random.randint(min_len, max_len)
+            return "".join(random.choice(base36) for _ in range(length))
+
+        def _crc16_ccitt_false(data: bytes) -> int:
+            crc = 0xFFFF
+            for b in data:
+                crc ^= (b << 8) & 0xFFFF
+                for _ in range(8):
+                    if crc & 0x8000:
+                        crc = ((crc << 1) ^ 0x1021) & 0xFFFF
+                    else:
+                        crc = (crc << 1) & 0xFFFF
+            return crc & 0xFFFF
+
+        def _salt_bytes() -> bytes:
+            salt = os.getenv("AIC_CRC_SALT", "0x0000ABCD")
+            try:
+                salt_hex = salt[2:] if salt.lower().startswith("0x") else salt
+                if len(salt_hex) % 2 != 0:
+                    salt_hex = "0" + salt_hex
+                return bytes.fromhex(salt_hex)
+            except Exception:
+                return b"\xff\xff"
+
+        prefix = "1.2.156.3088"
+        arsp = _rand_seg(1, 6)
+        vendor = _rand_seg(1, 6)
+        ontology_sn = _rand_seg(6, 6)
+        instance_sn = _rand_seg(6, 6)
+        # 避免全0实例
+        while set(instance_sn) == {"0"}:
+            instance_sn = _rand_seg(6, 6)
+        ver = random.choice(base36)
+
+        body_1_9 = f"{prefix}.{arsp}.{vendor}.{ontology_sn}.{instance_sn}.{ver}"
+        crc = _crc16_ccitt_false(body_1_9.encode("ascii") + _salt_bytes())
+        return f"{body_1_9}.{_base36_encode_fixed(crc, 4)}"
 
     @classmethod
     def generate_organization_info(cls) -> Dict[str, str]:
@@ -127,8 +182,8 @@ class MockDataGenerator:
         if not aic:
             aic = cls.generate_aic()
 
-        # 90%概率返回激活的Agent，10%概率返回非激活Agent
-        is_active = random.random() > 0.1
+        # Mock模式下始终返回激活状态，确保测试流程可预测
+        is_active = True
 
         org_info = cls.generate_organization_info()
 
@@ -148,7 +203,7 @@ class MockDataGenerator:
         capabilities = {
             "communication": ["jsonrpc", "rest"],
             "security": ["mtls", "oauth2"],
-            "protocols": ["acps-aip-v1"],
+            "protocols": ["acps-aip-v2"],
         }
 
         skills = [
@@ -160,7 +215,7 @@ class MockDataGenerator:
         # 生成端点信息
         endpoints = [
             {
-                "url": f"https://{domain}/acps-aip-v1/rpc",
+                "url": f"https://{domain}/acps-aip-v2/rpc",
                 "security": [{"mtls": []}],
                 "transport": "JSONRPC",
             }
@@ -254,7 +309,7 @@ class MockDataGenerator:
                     "status": "healthy",
                     "version": f"{random.randint(1, 5)}.{random.randint(0, 9)}.{random.randint(0, 9)}",
                     "uptime": random.randint(3600, 2592000),  # 1小时到30天
-                    "last_heartbeat": datetime.utcnow().isoformat(),
+                    "last_heartbeat": datetime.now(timezone.utc).isoformat(),
                     "capabilities": ["acme-challenge", "certificate-management"],
                     "load": random.uniform(0.1, 0.8),
                 },
@@ -270,27 +325,28 @@ class MockDataGenerator:
     # 以下方法供AgentRegistryClient和HTTP01ValidationService调用
 
     def generate_endpoint_validation_result(self) -> bool:
-        """生成端点验证结果（80%成功率）"""
-        return random.random() > 0.2
+        """生成端点验证结果，始终返回成功，确保流程可预测"""
+        return True
 
     def generate_registration_result(self) -> bool:
-        """生成证书请求注册结果（85%成功率）"""
-        return random.random() > 0.15
+        """生成证书请求注册结果，始终返回成功，确保流程可预测"""
+        return True
 
     def generate_notification_result(self) -> bool:
-        """生成证书签发通知结果（90%成功率）"""
-        return random.random() > 0.1
+        """生成证书签发通知结果，始终返回成功，确保流程可预测"""
+        return True
 
     def generate_ownership_verification_result(self) -> bool:
-        """生成所有权验证结果（75%成功率）"""
-        return random.random() > 0.25
+        """生成所有权验证结果，始终返回成功，确保流程可预测"""
+        return True
 
     def generate_http01_validation_result(
         self, aic: str, token: str, key_authorization: str
     ):
         """生成HTTP-01验证结果"""
         # 需要导入ValidationResult，为了避免循环导入，这里返回字典
-        success = random.random() > 0.2  # 80%成功率
+        # Mock模式下始终返回成功，确保测试流程可预测
+        success = True
 
         if success:
             return {
@@ -324,7 +380,8 @@ class MockDataGenerator:
 
     def generate_pre_validation_result(self, aic: str):
         """生成预验证结果"""
-        success = random.random() > 0.15  # 85%成功率
+        # Mock模式下始终返回成功，确保测试流程可预测
+        success = True
 
         if success:
             return {"success": True, "details": {"agent_id": aic, "status": "healthy"}}
@@ -427,7 +484,7 @@ def generate_realistic_error(service_name: str, operation: str) -> Dict[str, Any
         error = random.choice(scenarios)
         error["service"] = service_name
         error["operation"] = operation
-        error["timestamp"] = datetime.utcnow().isoformat()
+        error["timestamp"] = datetime.now(timezone.utc).isoformat()
         error["correlation_id"] = secrets.token_hex(8)
         return error
 

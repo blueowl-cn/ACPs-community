@@ -714,3 +714,245 @@ class SemanticAgentMatcher:
             },
             "config": self.semantic_config.copy()
         }
+
+
+class SkillSemanticMatcher:
+    """技能级语义相似度匹配器"""
+    
+    def __init__(self, 
+                 cache_dir: str = 'skill_semantic_cache',
+                 api_key: str = None,
+                 api_endpoint: str = None,
+                 model_name: str = "text-embedding-3-small",
+                 similarity_threshold: float = 0.3):
+        """
+        初始化技能语义匹配器
+        
+        Args:
+            cache_dir: 缓存目录
+            api_key: OPENAI API密钥
+            api_endpoint: OPENAI API端点
+            model_name: Embedding模型名称
+            similarity_threshold: 相似度阈值
+        """
+        self.api_key = api_key or settings.OPENAI_API_KEY
+        self.api_endpoint = api_endpoint or settings.OPENAI_BASE_URL
+        self.model_name = model_name or settings.EMBEDDING_MODEL_NAME
+        
+        if not self.api_key:
+            raise ValueError("未找到API密钥，请在配置中设置 OPENAI_API_KEY")
+        
+        self.client = AsyncOpenAI(
+            api_key=self.api_key,
+            base_url=self.api_endpoint
+        )
+        
+        # 设置缓存目录
+        if isinstance(cache_dir, str):
+            cache_dir = Path(cache_dir)
+        self.cache_dir = cache_dir.resolve()
+        self.cache_dir.mkdir(exist_ok=True, parents=True)
+        
+        self.similarity_threshold = similarity_threshold
+        
+        # 技能embedding缓存 {skill_key: embedding}
+        self.skill_embeddings = {}
+        
+        # 缓存文件路径
+        self.embeddings_cache_file = self.cache_dir / 'skill_embeddings.pkl'
+        
+        # 加载缓存
+        self._load_cache()
+        
+        logger.info(f"技能语义匹配器初始化完成，缓存目录: {self.cache_dir}")
+    
+    def _load_cache(self):
+        """从磁盘加载缓存数据"""
+        try:
+            if self.embeddings_cache_file.exists():
+                with open(self.embeddings_cache_file, 'rb') as f:
+                    self.skill_embeddings = pickle.load(f)
+                logger.info(f"加载了 {len(self.skill_embeddings)} 个技能的embedding缓存")
+        except Exception as e:
+            logger.warning(f"加载技能embedding缓存失败: {e}")
+            self.skill_embeddings = {}
+    
+    def _save_cache(self):
+        """保存缓存到磁盘"""
+        try:
+            with open(self.embeddings_cache_file, 'wb') as f:
+                pickle.dump(self.skill_embeddings, f)
+            logger.info(f"技能embedding缓存保存成功: {len(self.skill_embeddings)} 个")
+        except Exception as e:
+            logger.error(f"保存技能embedding缓存失败: {e}")
+    
+    def _get_skill_key(self, skill: Dict) -> str:
+        """生成技能的唯一标识符"""
+        aic = skill.get('aic', '')
+        skillid = skill.get('skillid', '')
+        if not skillid:
+            return f"{aic}@agent"
+        return f"{aic}_{skillid}"
+    
+    def _create_skill_summary(self, skill: Dict) -> str:
+        """创建技能摘要文本用于生成embedding"""
+        parts = []
+        
+        # 技能名称
+        skill_name = skill.get('skill_name', '')
+        if skill_name:
+            parts.append(f"技能: {skill_name}")
+        
+        # 技能描述
+        description = skill.get('description', '')
+        if description:
+            parts.append(f"描述: {description}")
+        
+        # 技能标签
+        tags = skill.get('tags', [])
+        if tags:
+            parts.append(f"标签: {', '.join(tags)}")
+        
+        # 输入输出类型
+        input_types = skill.get('inputTypes', [])
+        output_types = skill.get('outputTypes', [])
+        if input_types:
+            parts.append(f"输入类型: {', '.join(input_types)}")
+        if output_types:
+            parts.append(f"输出类型: {', '.join(output_types)}")
+        
+        # Agent信息（作为上下文）
+        agent_name = skill.get('agent_name', '')
+        if agent_name:
+            parts.append(f"所属Agent: {agent_name}")
+        
+        return "; ".join(parts) if parts else "未知技能"
+    
+    def _create_task_summary(self, task_description: str, task_requirements: Optional[Dict] = None) -> str:
+        """创建任务摘要文本"""
+        parts = [f"任务: {task_description}"]
+        
+        if task_requirements:
+            required_skills = task_requirements.get('required_skills', [])
+            domain = task_requirements.get('domain', '')
+            input_types = task_requirements.get('input_types', [])
+            output_types = task_requirements.get('output_types', [])
+            
+            if required_skills:
+                parts.append(f"需要技能: {', '.join(required_skills)}")
+            if domain:
+                parts.append(f"领域: {domain}")
+            if input_types:
+                parts.append(f"输入类型: {', '.join(input_types)}")
+            if output_types:
+                parts.append(f"输出类型: {', '.join(output_types)}")
+        
+        return "; ".join(parts)
+    
+    async def _get_embedding(self, text: str) -> np.ndarray:
+        """调用API生成单个embedding"""
+        try:
+            response = await self.client.embeddings.create(
+                model=self.model_name,
+                input=text
+            )
+            embedding = response.data[0].embedding
+            return np.array(embedding)
+        except Exception as e:
+            logger.error(f"生成embedding失败: {e}")
+            raise
+    
+    async def _get_embeddings_batch(self, texts: List[str]) -> List[np.ndarray]:
+        """批量生成embeddings"""
+        try:
+            response = await self.client.embeddings.create(
+                model=self.model_name,
+                input=texts
+            )
+            embeddings = [np.array(item.embedding) for item in response.data]
+            return embeddings
+        except Exception as e:
+            logger.warning(f"批量生成embedding失败，回退到逐个处理: {e}")
+            embeddings = []
+            for text in texts:
+                embedding = await self._get_embedding(text)
+                embeddings.append(embedding)
+            return embeddings
+    
+    async def calculate_skills_similarity(self,
+                                         task_description: str,
+                                         task_requirements: Optional[Dict],
+                                         skills: List[Dict]) -> Dict[str, float]:
+        """
+        计算任务与技能列表的语义相似度
+        
+        Args:
+            task_description: 任务描述
+            task_requirements: 任务需求
+            skills: 技能列表
+            
+        Returns:
+            {skill_key: similarity_score} 字典
+        """
+        if not skills:
+            return {}
+        
+        task_embedding = await self._get_embedding(task_description)
+        
+        # 收集需要生成embedding的技能
+        skills_to_embed = []
+        skill_keys_to_embed = []
+        skill_key_mapping = {}  # skill_key -> skill
+        
+        for skill in skills:
+            skill_key = self._get_skill_key(skill)
+            skill_key_mapping[skill_key] = skill
+            
+            if skill_key not in self.skill_embeddings:
+                skills_to_embed.append(skill)
+                skill_keys_to_embed.append(skill_key)
+        
+        # 批量生成缺失的embeddings
+        if skills_to_embed:
+            logger.info(f"生成 {len(skills_to_embed)} 个技能的新embeddings...")
+            summaries = [self._create_skill_summary(skill) for skill in skills_to_embed]
+            new_embeddings = await self._get_embeddings_batch(summaries)
+            
+            # 存储新生成的embeddings
+            for skill_key, embedding in zip(skill_keys_to_embed, new_embeddings):
+                self.skill_embeddings[skill_key] = embedding
+            
+            # 保存缓存
+            self._save_cache()
+        
+        # 计算相似度
+        similarities = {}
+        for skill in skills:
+            skill_key = self._get_skill_key(skill)
+            if skill_key in self.skill_embeddings:
+                skill_embedding = self.skill_embeddings[skill_key]
+                similarity = cosine_similarity(
+                    [task_embedding], [skill_embedding]
+                )[0][0]
+                similarities[skill_key] = float(similarity)
+            else:
+                similarities[skill_key] = 0.0
+        
+        return similarities
+    
+    def clear_cache(self):
+        """清除所有缓存"""
+        self.skill_embeddings = {}
+        if self.embeddings_cache_file.exists():
+            self.embeddings_cache_file.unlink()
+        logger.info("技能embedding缓存已清除")
+    
+    def get_statistics(self) -> Dict[str, Any]:
+        """获取统计信息"""
+        return {
+            "total_skills_cached": len(self.skill_embeddings),
+            "cache_file_exists": self.embeddings_cache_file.exists(),
+            "cache_dir": str(self.cache_dir),
+            "model_name": self.model_name,
+            "similarity_threshold": self.similarity_threshold
+        }

@@ -254,12 +254,9 @@ class HTTP01ValidationService:
                     success=False, error="No challenge URL available for agent"
                 )
 
-            # 构造健康检查URL - 使用同一主机的/status端点
-            # 例如: http://localhost:8004/ca/agent -> http://localhost:8004/status
-            from urllib.parse import urlparse
-
-            parsed_url = urlparse(base_url)
-            health_url = f"{parsed_url.scheme}://{parsed_url.netloc}/status"
+            # 构造健康检查URL - 使用 {CHALLENGE_SERVER_BASE_URL}/health
+            # 例如: http://localhost:8004/ca/agent -> http://localhost:8004/ca/agent/health
+            health_url = f"{base_url.rstrip('/')}/health"
 
             async with httpx.AsyncClient(timeout=10) as client:
                 response = await client.get(health_url)
@@ -270,14 +267,7 @@ class HTTP01ValidationService:
                         error=f"Agent health check failed: HTTP {response.status_code}",
                     )
 
-                health_data = response.json()
-                # 检查服务状态而不是agent_id匹配，因为Challenge Server是共享服务
-                if health_data.get("status") != "running":
-                    return ValidationResult(
-                        success=False,
-                        error=f"Agent service not running: {health_data.get('status')}",
-                    )
-
+                # 只要返回 200 OK 即表示服务正常，无需检查响应体内容
                 return ValidationResult(success=True)
 
         except Exception as e:

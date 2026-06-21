@@ -7,7 +7,7 @@ CRL和OCSP集成测试
 import pytest
 from fastapi.testclient import TestClient
 from sqlmodel import Session, select
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
 from app.core.db_session import engine
@@ -55,8 +55,8 @@ def test_certificates(db_session):
             subject=f"CN=test{i}.example.com,O=Test Org,C=CN",
             issuer="CN=Test CA,O=Test CA,C=CN",
             status=CertificateStatus.VALID,
-            issued_at=datetime.utcnow(),
-            expires_at=datetime.utcnow() + timedelta(days=365),
+            issued_at=datetime.now(timezone.utc),
+            expires_at=datetime.now(timezone.utc) + timedelta(days=365),
             certificate_pem=f"-----BEGIN CERTIFICATE-----\nTEST_CERT_{i}\n-----END CERTIFICATE-----",
             public_key=f"TEST_PUBLIC_KEY_{i}",
         )
@@ -70,9 +70,9 @@ def test_certificates(db_session):
         subject="CN=revoked.example.com,O=Test Org,C=CN",
         issuer="CN=Test CA,O=Test CA,C=CN",
         status=CertificateStatus.REVOKED,
-        issued_at=datetime.utcnow() - timedelta(days=30),
-        expires_at=datetime.utcnow() + timedelta(days=335),
-        revoked_at=datetime.utcnow() - timedelta(days=1),
+        issued_at=datetime.now(timezone.utc) - timedelta(days=30),
+        expires_at=datetime.now(timezone.utc) + timedelta(days=335),
+        revoked_at=datetime.now(timezone.utc) - timedelta(days=1),
         revocation_reason=RevocationReason.KEY_COMPROMISE,
         certificate_pem="-----BEGIN CERTIFICATE-----\nREVOKED_CERT\n-----END CERTIFICATE-----",
         public_key="REVOKED_PUBLIC_KEY",
@@ -87,8 +87,8 @@ def test_certificates(db_session):
         subject="CN=expired.example.com,O=Test Org,C=CN",
         issuer="CN=Test CA,O=Test CA,C=CN",
         status=CertificateStatus.EXPIRED,
-        issued_at=datetime.utcnow() - timedelta(days=400),
-        expires_at=datetime.utcnow() - timedelta(days=35),
+        issued_at=datetime.now(timezone.utc) - timedelta(days=400),
+        expires_at=datetime.now(timezone.utc) - timedelta(days=35),
         certificate_pem="-----BEGIN CERTIFICATE-----\nEXPIRED_CERT\n-----END CERTIFICATE-----",
         public_key="EXPIRED_PUBLIC_KEY",
     )
@@ -128,11 +128,11 @@ class TestCRLOCSPBasicIntegration:
     ):
         """测试初始状态下CRL和OCSP的一致性"""
         # 生成初始CRL
-        crl_response = client.post("/acps-atr-v1/crl/refresh")
+        crl_response = client.post("/acps-atr-v2/crl/refresh")
         assert crl_response.status_code == 200
 
         # 获取CRL详情
-        crl_detail_response = client.get("/acps-atr-v1/crl/detail")
+        crl_detail_response = client.get("/acps-atr-v2/crl/detail")
         assert crl_detail_response.status_code == 200
         crl_data = crl_detail_response.json()
 
@@ -143,7 +143,9 @@ class TestCRLOCSPBasicIntegration:
 
         # 测试OCSP状态与CRL一致性
         for cert in test_certificates:
-            ocsp_response = client.get(f"/acps-atr-v1/ocsp/certificate/{cert.serial_number}")
+            ocsp_response = client.get(
+                f"/acps-atr-v2/ocsp/certificate/{cert.serial_number}"
+            )
             assert ocsp_response.status_code == 200
             ocsp_data = ocsp_response.json()
 
@@ -177,7 +179,7 @@ class TestCRLOCSPBasicIntegration:
 
         # 1. 初始状态：证书有效
         ocsp_response = client.get(
-            f"/acps-atr-v1/ocsp/certificate/{valid_cert.serial_number}"
+            f"/acps-atr-v2/ocsp/certificate/{valid_cert.serial_number}"
         )
         assert ocsp_response.status_code == 200
         assert ocsp_response.json()["certificateStatus"] == "good"
@@ -191,7 +193,7 @@ class TestCRLOCSPBasicIntegration:
 
         # 3. 立即检查OCSP状态（应该已更新）
         ocsp_response = client.get(
-            f"/acps-atr-v1/ocsp/certificate/{valid_cert.serial_number}"
+            f"/acps-atr-v2/ocsp/certificate/{valid_cert.serial_number}"
         )
         assert ocsp_response.status_code == 200
         ocsp_data = ocsp_response.json()
@@ -199,11 +201,11 @@ class TestCRLOCSPBasicIntegration:
         assert ocsp_data["revocationReason"] == "keyCompromise"
 
         # 4. 刷新CRL
-        crl_refresh_response = client.post("/acps-atr-v1/crl/refresh")
+        crl_refresh_response = client.post("/acps-atr-v2/crl/refresh")
         assert crl_refresh_response.status_code == 200
 
         # 5. 检查CRL是否包含新吊销的证书
-        crl_detail_response = client.get("/acps-atr-v1/crl/detail")
+        crl_detail_response = client.get("/acps-atr-v2/crl/detail")
         assert crl_detail_response.status_code == 200
         crl_data = crl_detail_response.json()
 
@@ -241,7 +243,7 @@ class TestCRLOCSPBasicIntegration:
 
         # 执行批量查询
         batch_response = client.post(
-            "/acps-atr-v1/ocsp/batch", json={"certificates": certificate_requests}
+            "/acps-atr-v2/ocsp/batch", json={"certificates": certificate_requests}
         )
         assert batch_response.status_code == 200
 
@@ -253,7 +255,7 @@ class TestCRLOCSPBasicIntegration:
         for cert in test_certificates:
             # 单独查询
             single_response = client.get(
-                f"/acps-atr-v1/ocsp/certificate/{cert.serial_number}"
+                f"/acps-atr-v2/ocsp/certificate/{cert.serial_number}"
             )
             single_data = single_response.json()
 
@@ -275,7 +277,7 @@ class TestCRLOCSPErrorHandling:
         """测试在没有CA证书时的CRL生成"""
         # 这个测试依赖于CA管理器的配置
         # 如果CA证书不存在，应该返回适当的错误
-        response = client.post("/acps-atr-v1/crl/refresh")
+        response = client.post("/acps-atr-v2/crl/refresh")
         # 根据实际实现，这里可能返回200（如果有默认CA）或500（如果没有CA）
         assert response.status_code in [200, 500]
 
@@ -287,11 +289,11 @@ class TestCRLOCSPErrorHandling:
         db_session.commit()
 
         # 获取响应器信息应该返回404
-        response = client.get("/acps-atr-v1/ocsp/responder/info")
+        response = client.get("/acps-atr-v2/ocsp/responder/info")
         assert response.status_code == 404
 
         # 但是证书状态查询仍应该工作
-        response = client.get("/acps-atr-v1/ocsp/certificate/TEST123")
+        response = client.get("/acps-atr-v2/ocsp/certificate/TEST123")
         assert response.status_code == 200
 
     def test_invalid_certificate_id_revocation(self, client: TestClient):
@@ -314,7 +316,7 @@ class TestCRLOCSPErrorHandling:
         ]
 
         for request_data in malformed_requests:
-            response = client.post("/acps-atr-v1/ocsp/batch", json=request_data)
+            response = client.post("/acps-atr-v2/ocsp/batch", json=request_data)
             assert response.status_code in [400, 422]  # 应该返回客户端错误
 
 
@@ -326,7 +328,7 @@ class TestCRLOCSPPerformance:
         import time
 
         start_time = time.time()
-        response = client.post("/acps-atr-v1/crl/refresh")
+        response = client.post("/acps-atr-v2/crl/refresh")
         end_time = time.time()
 
         assert response.status_code == 200
@@ -345,7 +347,7 @@ class TestCRLOCSPPerformance:
         if test_certificates:
             cert = test_certificates[0]
             start_time = time.time()
-            response = client.get(f"/acps-atr-v1/ocsp/certificate/{cert.serial_number}")
+            response = client.get(f"/acps-atr-v2/ocsp/certificate/{cert.serial_number}")
             end_time = time.time()
 
             assert response.status_code == 200
@@ -371,7 +373,7 @@ class TestCRLOCSPPerformance:
 
         start_time = time.time()
         response = client.post(
-            "/acps-atr-v1/ocsp/batch", json={"certificates": certificate_requests}
+            "/acps-atr-v2/ocsp/batch", json={"certificates": certificate_requests}
         )
         end_time = time.time()
 
@@ -397,10 +399,10 @@ class TestCRLOCSPDataConsistency:
             pytest.skip("需要至少2个有效证书进行此测试")
 
         # 记录初始状态 - 先刷新CRL以确保有当前CRL
-        refresh_response = client.post("/acps-atr-v1/crl/refresh")
+        refresh_response = client.post("/acps-atr-v2/crl/refresh")
         assert refresh_response.status_code == 200
 
-        initial_crl_response = client.get("/acps-atr-v1/crl/detail")
+        initial_crl_response = client.get("/acps-atr-v2/crl/detail")
         assert initial_crl_response.status_code == 200
         initial_crl_data = initial_crl_response.json()
         initial_revoked_count = initial_crl_data["revokedCertificatesCount"]
@@ -416,11 +418,11 @@ class TestCRLOCSPDataConsistency:
             revoked_serials.append(cert.serial_number)
 
         # 刷新CRL
-        crl_refresh_response = client.post("/acps-atr-v1/crl/refresh")
+        crl_refresh_response = client.post("/acps-atr-v2/crl/refresh")
         assert crl_refresh_response.status_code == 200
 
         # 验证CRL包含所有吊销的证书
-        final_crl_response = client.get("/acps-atr-v1/crl/detail")
+        final_crl_response = client.get("/acps-atr-v2/crl/detail")
         final_crl_data = final_crl_response.json()
 
         assert final_crl_data["revokedCertificatesCount"] == initial_revoked_count + 2
@@ -433,21 +435,21 @@ class TestCRLOCSPDataConsistency:
 
         # 验证OCSP状态也已更新
         for serial in revoked_serials:
-            ocsp_response = client.get(f"/acps-atr-v1/ocsp/certificate/{serial}")
+            ocsp_response = client.get(f"/acps-atr-v2/ocsp/certificate/{serial}")
             assert ocsp_response.status_code == 200
             assert ocsp_response.json()["certificateStatus"] == "revoked"
 
     def test_crl_version_progression(self, client: TestClient):
         """测试CRL版本的正确递进"""
         # 获取当前CRL版本
-        crl_info_response = client.get("/acps-atr-v1/crl/info")
+        crl_info_response = client.get("/acps-atr-v2/crl/info")
         if crl_info_response.status_code == 200:
             initial_version = crl_info_response.json()["version"]
         else:
             initial_version = None
 
         # 刷新CRL
-        refresh_response = client.post("/acps-atr-v1/crl/refresh")
+        refresh_response = client.post("/acps-atr-v2/crl/refresh")
         assert refresh_response.status_code == 200
         new_version = refresh_response.json()["version"]
 
@@ -456,7 +458,7 @@ class TestCRLOCSPDataConsistency:
             assert new_version > initial_version
 
         # 再次刷新
-        refresh_response2 = client.post("/acps-atr-v1/crl/refresh")
+        refresh_response2 = client.post("/acps-atr-v2/crl/refresh")
         assert refresh_response2.status_code == 200
         newer_version = refresh_response2.json()["version"]
 

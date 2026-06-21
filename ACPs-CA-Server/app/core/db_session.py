@@ -10,10 +10,12 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+sql_echo_enabled = settings.uvicorn_log_level.lower() == "debug"
+
 # 创建数据库引擎
 engine = create_engine(
     settings.database_url_computed,
-    echo=settings.debug,  # 开发环境下打印 SQL 语句
+    echo=sql_echo_enabled,
     pool_pre_ping=True,  # 连接前检查连接是否有效
     pool_recycle=3600,  # 连接回收时间（秒）
 )

@@ -93,6 +93,9 @@ class Certificate(SQLModel, table=True):
     # 证书内容
     certificate_pem: str = Field(description="证书PEM格式内容")
     public_key: str = Field(description="公钥")
+    
+    # 版本号，自增量，用于区分同一AIC的不同版本证书
+    version: int = Field(default=1, description="证书版本号")
 
     # 关联字段
     parent_certificate_id: Optional[UUID] = Field(

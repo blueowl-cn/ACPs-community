@@ -5,11 +5,13 @@ CRL (Certificate Revocation List) 测试
 """
 
 import pytest
+from fastapi.testclient import TestClient
 from sqlmodel import Session
 from datetime import timedelta
 from uuid import uuid4
 import time
 
+from main import app
 from app.core.db_session import engine
 from app.common import (
     Certificate,
@@ -181,6 +183,50 @@ class TestCRLQuery:
         assert found_crl.crl_number == created_crl.crl_number
 
 
-def test_simple():
-    """简单测试"""
-    assert True
+class TestCRLAPI:
+    """测试CRL API接口"""
+
+    @pytest.fixture
+    def client(self):
+        return TestClient(app)
+
+    def test_download_crl_default(self, client, crl_service, clean_db):
+        """测试默认下载CRL (DER格式)"""
+        # 生成CRL
+        crl_service.generate_new_crl(issuer="CN=Test CA")
+
+        response = client.get("/acps-atr-v2/crl")
+        assert response.status_code == 200
+        assert response.headers["content-type"] == "application/pkix-crl"
+        # DER编码通常以0x30开头 (SEQUENCE)
+        assert response.content.startswith(b"\x30")
+
+    def test_download_crl_pem(self, client, crl_service, clean_db):
+        """测试下载PEM格式CRL"""
+        # 生成CRL
+        crl_service.generate_new_crl(issuer="CN=Test CA")
+
+        response = client.get("/acps-atr-v2/crl?format=pem")
+        assert response.status_code == 200
+        assert response.headers["content-type"] == "application/x-pem-file"
+        assert b"BEGIN X509 CRL" in response.content
+
+    def test_get_current_crl_api(self, client, crl_service, clean_db):
+        """测试获取当前CRL接口"""
+        crl_service.generate_new_crl(issuer="CN=Test CA")
+
+        response = client.get("/acps-atr-v2/crl/current")
+        assert response.status_code == 200
+        assert response.headers["content-type"] == "application/pkix-crl"
+
+    def test_get_crl_info(self, client, crl_service, clean_db):
+        """测试获取CRL信息"""
+        crl_service.generate_new_crl(issuer="CN=Test CA")
+
+        response = client.get("/acps-atr-v2/crl/info")
+        assert response.status_code == 200
+        data = response.json()
+        assert "version" in data
+        assert "issuer" in data
+        assert "this_update" in data
+        assert "next_update" in data
