@@ -506,9 +506,10 @@ def register_entity(
 
 @main.command("check")
 @click.option("--acs-file", required=True, help="Path to ACS JSON file")
+@click.option("--include-acs", is_flag=True, help="Include Registry ACS detail in output")
 @click.option("--json", "as_json", is_flag=True, help="Output JSON")
 @click.pass_context
-def check_agent(ctx: click.Context, acs_file: str, as_json: bool) -> None:
+def check_agent(ctx: click.Context, acs_file: str, include_acs: bool, as_json: bool) -> None:
     """按 ACS 定位当前用户 Agent，并输出状态摘要。"""
     client: RegistryApiClient = ctx.obj["client"]
     acs = _load_acs_file(acs_file)
@@ -533,11 +534,24 @@ def check_agent(ctx: click.Context, acs_file: str, as_json: bool) -> None:
         )
         return
 
+    detailed_agent = agent
+    if include_acs:
+        agent_id = str(agent.get("id") or "")
+        if not agent_id:
+            raise click.ClickException("Located agent is missing id")
+        try:
+            detailed_agent = client.get_my_agent(agent_id)
+        except RegistryClientError as exc:
+            raise click.ClickException(str(exc)) from exc
+
     output = {
-        "status": _derive_agent_status(agent),
+        "status": _derive_agent_status(detailed_agent),
         "source": source,
-        **_flatten_agent(agent),
+        **_flatten_agent(detailed_agent),
     }
+    if include_acs:
+        output["registry_acs"] = _parse_embedded_agent_acs(detailed_agent.get("acs"))
+        output["registry_acs_hash"] = detailed_agent.get("acs_hash")
     print_result(output, as_json=as_json)
 
 

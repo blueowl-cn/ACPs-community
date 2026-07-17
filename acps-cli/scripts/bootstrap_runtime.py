@@ -7,6 +7,7 @@ import argparse
 import getpass
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -41,6 +42,11 @@ REDIS_SERVER_CERT_FILE_NAME = "redis-server.pem"
 REDIS_SERVER_KEY_FILE_NAME = "redis-server.key"
 SUMMARY_FILE_NAME = "summary.json"
 WORK_DIR_NAME = ".work"
+AIC_PREFIX = "1.2.156.3088"
+_AIC_BASE36_PATTERN = re.compile(r"^[0-9A-Z]+$")
+_AIC_SEGMENT_LENGTHS = ((1, 1), (1, 6), (1, 6), (1, 9), (1, 9), (4, 4))
+REGISTRATION_STATUSES = {"missing", "draft", "rejected", "pending", "approved"}
+SYNC_SUCCESS_STATUSES = {"synced", "unchanged"}
 
 
 class BootstrapError(RuntimeError):
@@ -319,17 +325,6 @@ def get_int_setting(
         raise BootstrapError(f"[{section}].{key} 不是有效整数") from exc
 
 
-def clear_generated_state(cleanup_paths: tuple[Path, ...]) -> None:
-    for path in cleanup_paths:
-        try:
-            if path.is_dir():
-                shutil.rmtree(path)
-            elif path.is_file():
-                path.unlink()
-        except OSError:
-            pass
-
-
 def run_command(cmd: list[str], *, cwd: Path | None = None, env: dict[str, str] | None = None) -> str:
     result = subprocess.run(  # noqa: S603
         cmd,
@@ -343,19 +338,6 @@ def run_command(cmd: list[str], *, cwd: Path | None = None, env: dict[str, str] 
     if result.returncode != 0:
         raise BootstrapError(f"命令失败: {' '.join(cmd)}\n{output}")
     return output
-
-
-def run_cli(cmd: list[str], *, cwd: Path | None = None, env: dict[str, str] | None = None) -> tuple[bool, str]:
-    result = subprocess.run(  # noqa: S603
-        cmd,
-        cwd=str(cwd) if cwd is not None else None,
-        env=env,
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-    )
-    output = (result.stdout + result.stderr).strip()
-    return result.returncode == 0, output
 
 
 def load_json_output(output: str) -> dict[str, Any]:
@@ -395,43 +377,22 @@ def run_json_command(cmd: list[str], *, cwd: Path | None = None, env: dict[str, 
     return load_json_output(run_command(cmd, cwd=cwd, env=env))
 
 
-def is_approved_update_conflict(output: str) -> bool:
-    upper_output = output.upper()
-    return "APPROVED" in upper_output and "CANNOT BE UPDATED" in upper_output
-
-
 def save_registration_metadata(spec: RegistrationSpec, *, cli_bin: str, config_path: Path) -> dict[str, Any]:
-    command = [
-        cli_bin,
-        "--config",
-        str(config_path),
-        "agent",
-        "save",
-        "--acs-file",
-        str(spec.acs_path),
-        "--json",
-    ]
-    ok, output = run_cli(command)
-    if not ok and is_approved_update_conflict(output):
-        log(f"{spec.name} 已审批且 ACS 有变更，自动删除后重建")
-        delete_command = [
-            cli_bin,
-            "--config",
-            str(config_path),
-            "agent",
-            "delete",
-            "--acs-file",
-            str(spec.acs_path),
-            "--json",
-        ]
-        delete_ok, delete_output = run_cli(delete_command)
-        if not delete_ok:
-            raise BootstrapError(f"{spec.name} 删除旧 Agent 失败: {delete_output}")
-        clear_generated_state(spec.cleanup_paths)
-        ok, output = run_cli(command)
-    if not ok:
-        raise BootstrapError(f"{spec.name} 保存 ACS metadata 失败: {output}")
-    return load_json_output(output)
+    try:
+        return run_json_command(
+            [
+                cli_bin,
+                "--config",
+                str(config_path),
+                "agent",
+                "save",
+                "--acs-file",
+                str(spec.acs_path),
+                "--json",
+            ]
+        )
+    except BootstrapError as exc:
+        raise BootstrapError(f"{spec.name} 保存 ACS metadata 失败: {exc}") from exc
 
 
 def parse_bool_flag(value: Any) -> bool:
@@ -440,19 +401,13 @@ def parse_bool_flag(value: Any) -> bool:
     return str(value).strip().lower() == "true"
 
 
-def read_registration_status(
+def check_registration_metadata(
     spec: RegistrationSpec,
     *,
     cli_bin: str,
     config_path: Path,
-    payload: dict[str, Any],
-) -> tuple[str, str, bool, str]:
-    current_status = str(payload.get("approval_status") or "").lower()
-    agent_id = str(payload.get("agent_id") or "")
-    is_disabled = parse_bool_flag(payload.get("is_disabled"))
-    aic = str(payload.get("aic") or "").strip()
-
-    check_output = run_json_command(
+) -> dict[str, Any]:
+    return run_json_command(
         [
             cli_bin,
             "--config",
@@ -461,13 +416,210 @@ def read_registration_status(
             "check",
             "--acs-file",
             str(spec.acs_path),
+            "--include-acs",
             "--json",
         ]
     )
-    current_status = str(check_output.get("status") or current_status).lower()
-    agent_id = str(check_output.get("agent_id") or agent_id)
-    is_disabled = parse_bool_flag(check_output.get("is_disabled", is_disabled))
-    aic = str(check_output.get("aic") or aic).strip()
+
+
+def sync_registration_metadata(
+    spec: RegistrationSpec,
+    *,
+    cli_bin: str,
+    config_path: Path,
+    expected_agent_id: str,
+    expected_aic: str,
+) -> dict[str, Any]:
+    payload = run_json_command(
+        [
+            cli_bin,
+            "--config",
+            str(config_path),
+            "agent",
+            "sync",
+            "--acs-file",
+            str(spec.acs_path),
+            "--json",
+        ]
+    )
+    actual_status = str(payload.get("status") or "").strip().lower()
+    actual_agent_id = str(payload.get("agent_id") or "").strip()
+    actual_aic = str(payload.get("aic") or "").strip()
+    if actual_status not in SYNC_SUCCESS_STATUSES or actual_agent_id != expected_agent_id or actual_aic != expected_aic:
+        raise BootstrapError(
+            f"{spec.name} agent sync 身份校验失败，Registry 状态可能在并发中发生变化；"
+            f"预期 agent_id={expected_agent_id}, AIC={expected_aic}；"
+            f"实际 status={actual_status or '<missing>'}, "
+            f"agent_id={actual_agent_id or '<missing>'}, AIC={actual_aic or '<missing>'}"
+        )
+    return payload
+
+
+def is_valid_aic_format(value: Any) -> bool:
+    """Validate the ACPs-spec-AIC-v02.01 structure without checking the salted CRC."""
+
+    if not isinstance(value, str):
+        return False
+    normalized = re.sub(r"\s+", "", value).upper()
+    parts = normalized.split(".")
+    if len(parts) != 10 or parts[:4] != AIC_PREFIX.split("."):
+        return False
+    if not all(part.isdigit() for part in parts[:4]):
+        return False
+    for part, (minimum, maximum) in zip(parts[4:], _AIC_SEGMENT_LENGTHS, strict=True):
+        if not _AIC_BASE36_PATTERN.fullmatch(part) or not minimum <= len(part) <= maximum:
+            return False
+    return True
+
+
+def _valid_aic_replacement_values(values: tuple[Any, ...]) -> set[str]:
+    replacements: set[str] = set()
+    for value in values:
+        if not is_valid_aic_format(value):
+            continue
+        stripped = value.strip()
+        normalized = re.sub(r"\s+", "", value).upper()
+        replacements.add(stripped)
+        replacements.add(normalized)
+    return replacements
+
+
+def normalize_acs_for_comparison(
+    acs: dict[str, Any],
+    *,
+    known_aics: tuple[str, ...] = (),
+) -> dict[str, Any]:
+    """Return business ACS content with Registry-managed root metadata normalized."""
+
+    serialized_copy = json.loads(json.dumps(acs, ensure_ascii=False))
+    if not isinstance(serialized_copy, dict):  # pragma: no cover - dict input always decodes as dict
+        raise ValueError("ACS must be a JSON object")
+    normalized: dict[str, Any] = serialized_copy
+    root_aic = normalized.get("aic")
+    normalized.pop("aic", None)
+    normalized.pop("active", None)
+    normalized.pop("lastModifiedTime", None)
+
+    exact_aics = _valid_aic_replacement_values((*known_aics, root_aic))
+    endpoints = normalized.get("endPoints")
+    if isinstance(endpoints, list):
+        for endpoint in endpoints:
+            if not isinstance(endpoint, dict) or not isinstance(endpoint.get("url"), str):
+                continue
+            url = endpoint["url"].replace("{aic}", "{AIC}")
+            for known_aic in sorted(exact_aics, key=len, reverse=True):
+                url = url.replace(known_aic, "{AIC}")
+            endpoint["url"] = url
+    return normalized
+
+
+def summarize_json_differences(left: Any, right: Any, *, limit: int = 6) -> list[str]:
+    """Return a bounded list of JSON paths whose values differ."""
+
+    differences: list[str] = []
+
+    def add(path: str) -> None:
+        if path not in differences and len(differences) < limit:
+            differences.append(path)
+
+    def child_path(path: str, key: str) -> str:
+        if key.isidentifier():
+            return f"{path}.{key}"
+        return f"{path}[{json.dumps(key, ensure_ascii=False)}]"
+
+    def visit(local_value: Any, registry_value: Any, path: str) -> None:
+        if len(differences) >= limit:
+            return
+        if isinstance(local_value, dict) and isinstance(registry_value, dict):
+            for key in sorted(set(local_value) | set(registry_value)):
+                next_path = child_path(path, key)
+                if key not in local_value or key not in registry_value:
+                    add(next_path)
+                else:
+                    visit(local_value[key], registry_value[key], next_path)
+            return
+        if isinstance(local_value, list) and isinstance(registry_value, list):
+            for index in range(max(len(local_value), len(registry_value))):
+                next_path = f"{path}[{index}]"
+                if index >= len(local_value) or index >= len(registry_value):
+                    add(next_path)
+                else:
+                    visit(local_value[index], registry_value[index], next_path)
+            return
+        if local_value != registry_value:
+            add(path)
+
+    visit(left, right, "$")
+    return differences
+
+
+def compare_acs_business_content(
+    local_acs: dict[str, Any],
+    registry_acs: dict[str, Any],
+    *,
+    agent_aic: str = "",
+) -> tuple[bool, list[str]]:
+    """Compare ACS business content without Registry-managed identity metadata."""
+
+    local_aic = local_acs.get("aic")
+    registry_aic = registry_acs.get("aic")
+    known_aics = tuple(
+        value for value in (local_aic, registry_aic, agent_aic) if isinstance(value, str) and value.strip()
+    )
+    normalized_local = normalize_acs_for_comparison(local_acs, known_aics=known_aics)
+    normalized_registry = normalize_acs_for_comparison(registry_acs, known_aics=known_aics)
+    differences = summarize_json_differences(normalized_local, normalized_registry)
+    return not differences, differences
+
+
+def _assert_registration_acs_equivalent(spec: RegistrationSpec, check_output: dict[str, Any]) -> None:
+    registry_acs = check_output.get("registry_acs")
+    if not isinstance(registry_acs, dict):
+        raise BootstrapError(f"{spec.name} 的 Registry 详情未返回可比较的 ACS")
+    local_acs = load_json_file(spec.acs_path)
+    equivalent, differences = compare_acs_business_content(
+        local_acs,
+        registry_acs,
+        agent_aic=str(check_output.get("aic") or "").strip(),
+    )
+    if equivalent:
+        return
+    status = str(check_output.get("status") or "unknown").upper()
+    difference_text = ", ".join(differences) or "未知路径"
+    guidance = "；请提升 ACS version 后重新注册" if status == "APPROVED" else ""
+    raise BootstrapError(f"{spec.name} 本地 ACS 与 Registry {status} ACS 不一致（差异: {difference_text}）{guidance}")
+
+
+def _registration_fields(payload: dict[str, Any]) -> tuple[str, str, bool, str]:
+    return (
+        str(payload.get("status") or payload.get("approval_status") or "").lower(),
+        str(payload.get("agent_id") or ""),
+        parse_bool_flag(payload.get("is_disabled")),
+        str(payload.get("aic") or "").strip(),
+    )
+
+
+def _validate_checked_registration(
+    spec: RegistrationSpec,
+    check_output: dict[str, Any],
+    *,
+    expected_agent_id: str = "",
+    require_enabled: bool = False,
+) -> tuple[str, str, bool, str]:
+    current_status, agent_id, is_disabled, aic = _registration_fields(check_output)
+    if current_status not in REGISTRATION_STATUSES:
+        raise BootstrapError(f"{spec.name} 遇到不支持的状态: {current_status or 'unknown'}")
+    if current_status != "missing" and not agent_id:
+        raise BootstrapError(f"{spec.name} 未返回 agent_id")
+    if expected_agent_id and agent_id != expected_agent_id:
+        raise BootstrapError(
+            f"{spec.name} Registry agent_id 在操作期间发生变化："
+            f"预期 {expected_agent_id}，实际 {agent_id or '<missing>'}"
+        )
+    if require_enabled and is_disabled:
+        raise BootstrapError(f"{spec.name} enable 后仍处于 disabled 状态")
+    if current_status in {"pending", "approved"}:
+        _assert_registration_acs_equivalent(spec, check_output)
     return current_status, agent_id, is_disabled, aic
 
 
@@ -478,19 +630,12 @@ def ensure_registration(
     config_path: Path,
     approval_comments: str,
 ) -> str:
-    payload = save_registration_metadata(spec, cli_bin=cli_bin, config_path=config_path)
-    current_status, agent_id, is_disabled, aic = read_registration_status(
-        spec,
-        cli_bin=cli_bin,
-        config_path=config_path,
-        payload=payload,
-    )
-    if not agent_id:
-        raise BootstrapError(f"{spec.name} 未返回 agent_id")
-    if current_status not in {"draft", "pending", "approved"}:
-        raise BootstrapError(f"{spec.name} 遇到不支持的状态: {current_status}")
+    check_output = check_registration_metadata(spec, cli_bin=cli_bin, config_path=config_path)
+    current_status, agent_id, is_disabled, aic = _validate_checked_registration(spec, check_output)
 
     if is_disabled:
+        if not agent_id:
+            raise BootstrapError(f"{spec.name} disabled 状态未返回 agent_id")
         run_json_command(
             [
                 cli_bin,
@@ -505,8 +650,43 @@ def ensure_registration(
                 "--json",
             ]
         )
+        check_output = check_registration_metadata(spec, cli_bin=cli_bin, config_path=config_path)
+        current_status, agent_id, is_disabled, aic = _validate_checked_registration(
+            spec,
+            check_output,
+            expected_agent_id=agent_id,
+            require_enabled=True,
+        )
 
-    if current_status == "draft":
+    if current_status in {"missing", "draft", "rejected"}:
+        previous_agent_id = agent_id
+        save_registration_metadata(spec, cli_bin=cli_bin, config_path=config_path)
+        check_output = check_registration_metadata(spec, cli_bin=cli_bin, config_path=config_path)
+        current_status, agent_id, _is_disabled, aic = _validate_checked_registration(
+            spec,
+            check_output,
+            expected_agent_id=previous_agent_id,
+        )
+
+    if not agent_id:
+        raise BootstrapError(f"{spec.name} 未返回 agent_id")
+
+    if current_status not in {"draft", "rejected", "pending", "approved"}:
+        raise BootstrapError(f"{spec.name} 保存后遇到不支持的状态: {current_status or 'unknown'}")
+
+    if current_status == "approved":
+        if not aic:
+            raise BootstrapError(f"{spec.name} APPROVED 状态未返回 AIC")
+        sync_registration_metadata(
+            spec,
+            cli_bin=cli_bin,
+            config_path=config_path,
+            expected_agent_id=agent_id,
+            expected_aic=aic,
+        )
+        return aic
+
+    if current_status in {"draft", "rejected"}:
         submit_output = run_json_command(
             [
                 cli_bin,
@@ -541,21 +721,23 @@ def ensure_registration(
         current_status = str(approve_output.get("approval_status") or "").lower()
         aic = str(approve_output.get("aic") or aic).strip()
 
-    current_status, agent_id, _is_disabled, aic = read_registration_status(
+    check_output = check_registration_metadata(spec, cli_bin=cli_bin, config_path=config_path)
+    current_status, agent_id, _is_disabled, aic = _validate_checked_registration(
         spec,
-        cli_bin=cli_bin,
-        config_path=config_path,
-        payload={
-            "approval_status": current_status,
-            "agent_id": agent_id,
-            "is_disabled": is_disabled,
-            "aic": aic,
-        },
+        check_output,
+        expected_agent_id=agent_id,
     )
     if current_status != "approved":
         raise BootstrapError(f"{spec.name} 未进入 APPROVED 状态: {current_status}")
     if not aic:
         raise BootstrapError(f"{spec.name} 审批完成后仍未返回 AIC")
+    sync_registration_metadata(
+        spec,
+        cli_bin=cli_bin,
+        config_path=config_path,
+        expected_agent_id=agent_id,
+        expected_aic=aic,
+    )
     return aic
 
 
@@ -1536,7 +1718,6 @@ def bootstrap_demo_partner_profile(
             config_path=config_path,
             approval_comments=approval_comments,
         )
-        sync_acs_aic(agent.acs_path, aic)
 
         trust_bundle_path = agent.directory / TRUST_BUNDLE_FILE_NAME
         certificates = [
@@ -1623,7 +1804,6 @@ def bootstrap_demo_leader_profile(
         config_path=config_path,
         approval_comments=approval_comments,
     )
-    sync_acs_aic(runtime_spec.acs_path, aic)
     partner_install_dir = discover_demo_partner_install_dir(
         demo_partner_install_dir,
         install_dir,

@@ -184,10 +184,16 @@ def agent_submit(ctx: click.Context, agent_id: str, as_json: bool) -> None:
 
 @agent_group.command("check")
 @click.option("--acs-file", required=True, help="Path to ACS JSON file")
+@click.option("--include-acs", is_flag=True, help="Include Registry ACS detail in output")
 @click.option("--json", "as_json", is_flag=True, help="Output JSON")
 @click.pass_context
-def agent_check(ctx: click.Context, acs_file: str, as_json: bool) -> None:
-    _invoke_legacy_callback(commands.check_agent, acs_file=acs_file, as_json=as_json)
+def agent_check(ctx: click.Context, acs_file: str, include_acs: bool, as_json: bool) -> None:
+    _invoke_legacy_callback(
+        commands.check_agent,
+        acs_file=acs_file,
+        include_acs=include_acs,
+        as_json=as_json,
+    )
 
 
 @agent_group.command("sync")
