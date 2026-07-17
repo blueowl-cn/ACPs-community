@@ -532,7 +532,9 @@ bash scripts/bootstrap.sh demo-partner \
 补充说明：
 
 - 这个模式不会读取 `scripts/acs/` 下的静态模板，而是直接扫描 `--install-dir/partners/online/*/acs.json`。
-- 脚本会对这些 `acs.json` 逐个执行保存、提交、审批和发证，并把审批返回的 `aic` 回写到原文件。
+- 脚本会先按本地 AIC、再按 `name + version` 检查 Registry 状态：首次注册或 `DRAFT` / `REJECTED` 才执行保存、提交和审批；`PENDING` 在 ACS 等价时继续审批；已存在且 ACS 等价的 `APPROVED` Agent 会复用原 `agent_id` 与 AIC，不再保存、删除或重建。
+- 若同一 `name + version` 的 `PENDING` / `APPROVED` Agent 与本地 ACS 存在业务差异，bootstrap 会停止并报告差异；`APPROVED` 场景应提升 ACS `version` 后重新注册。重复运行不会自动删除已审批 Agent。
+- Agent 注册完成或复用后会通过 `agent sync` 回写 Registry 管理的 ACS metadata。证书签发仍保持现有行为，不属于本阶段的幂等范围。
 - 证书文件会直接写回各自的 Partner 子目录：`server.pem`、`server.key`、`trust-bundle.pem`、`client.pem`、`client.key`。
 - 默认汇总目录是 `<install-dir>/bootstrap-artifacts/`；如需改到其它目录，可显式传入 `--output-dir`。
 - 因为该模式需要直接读写安装目录，所以 `acps-cli` 必须与 `demo-partner` 位于同一台机器，或至少能访问同一个共享文件系统。

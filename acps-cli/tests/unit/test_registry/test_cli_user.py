@@ -475,6 +475,156 @@ def test_check_returns_missing_when_agent_not_found(monkeypatch, tmp_path, empty
     assert data["status"] == "missing"
     assert data["name"] == "demo-agent"
     assert client.find_by_name_version_calls == [("demo-agent", "1.0.0")]
+    assert client.get_my_agent_calls == []
+
+
+def test_check_default_output_remains_compatible(monkeypatch, tmp_path, empty_conf):
+    runner = CliRunner()
+    client = StubClient()
+    client.find_by_name_version_result = {
+        "id": "agent-1",
+        "name": "demo-agent",
+        "version": "1.0.0",
+        "approval_status": "APPROVED",
+        "aic": "1.2.3",
+        "is_deleted": False,
+        "is_disabled": False,
+    }
+    acs_path = tmp_path / "agent.json"
+    acs_path.write_text(
+        json.dumps({"name": "demo-agent", "version": "1.0.0", "aic": ""}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr("acps_cli.registry.unified.RegistryApiClient", lambda config: client)
+
+    result = runner.invoke(
+        main,
+        ["--config", str(empty_conf), "agent", "check", "--acs-file", str(acs_path), "--json"],
+    )
+
+    assert result.exit_code == 0
+    data = json.loads(result.output)
+    assert "registry_acs" not in data
+    assert "registry_acs_hash" not in data
+    assert client.get_my_agent_calls == []
+
+
+def test_check_include_acs_fetches_agent_detail(monkeypatch, tmp_path, empty_conf):
+    runner = CliRunner()
+    client = StubClient()
+    client.find_by_name_version_result = {
+        "id": "agent-1",
+        "name": "demo-agent",
+        "version": "1.0.0",
+        "approval_status": "APPROVED",
+        "aic": "1.2.3",
+    }
+    client.get_my_agent_result = {
+        **client.find_by_name_version_result,
+        "acs": {"name": "demo-agent", "version": "1.0.0", "aic": "1.2.3"},
+        "acs_hash": "sha256:abc",
+    }
+    acs_path = tmp_path / "agent.json"
+    acs_path.write_text(
+        json.dumps({"name": "demo-agent", "version": "1.0.0", "aic": ""}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr("acps_cli.registry.unified.RegistryApiClient", lambda config: client)
+
+    result = runner.invoke(
+        main,
+        [
+            "--config",
+            str(empty_conf),
+            "agent",
+            "check",
+            "--acs-file",
+            str(acs_path),
+            "--include-acs",
+            "--json",
+        ],
+    )
+
+    assert result.exit_code == 0
+    data = json.loads(result.output)
+    assert data["registry_acs"] == client.get_my_agent_result["acs"]
+    assert data["registry_acs_hash"] == "sha256:abc"
+    assert client.get_my_agent_calls == ["agent-1"]
+
+
+def test_check_include_acs_missing_does_not_fetch_detail(monkeypatch, tmp_path, empty_conf):
+    runner = CliRunner()
+    client = StubClient()
+    acs_path = tmp_path / "agent.json"
+    acs_path.write_text(
+        json.dumps({"name": "demo-agent", "version": "1.0.0", "aic": ""}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr("acps_cli.registry.unified.RegistryApiClient", lambda config: client)
+
+    result = runner.invoke(
+        main,
+        [
+            "--config",
+            str(empty_conf),
+            "agent",
+            "check",
+            "--acs-file",
+            str(acs_path),
+            "--include-acs",
+            "--json",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert json.loads(result.output)["status"] == "missing"
+    assert client.get_my_agent_calls == []
+
+
+def test_check_include_acs_falls_back_from_stale_aic_to_name_version(
+    monkeypatch, tmp_path, empty_conf
+):
+    runner = CliRunner()
+    client = StubClient()
+    client.find_by_name_version_result = {
+        "id": "agent-current",
+        "name": "demo-agent",
+        "version": "1.0.0",
+        "approval_status": "APPROVED",
+        "aic": "1.2.CURRENT",
+    }
+    client.get_my_agent_result = {
+        **client.find_by_name_version_result,
+        "acs": {"name": "demo-agent", "version": "1.0.0", "aic": "1.2.CURRENT"},
+        "acs_hash": "current-hash",
+    }
+    acs_path = tmp_path / "agent.json"
+    acs_path.write_text(
+        json.dumps({"name": "demo-agent", "version": "1.0.0", "aic": "1.2.STALE"}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr("acps_cli.registry.unified.RegistryApiClient", lambda config: client)
+
+    result = runner.invoke(
+        main,
+        [
+            "--config",
+            str(empty_conf),
+            "agent",
+            "check",
+            "--acs-file",
+            str(acs_path),
+            "--include-acs",
+            "--json",
+        ],
+    )
+
+    assert result.exit_code == 0
+    data = json.loads(result.output)
+    assert data["source"] == "name_version"
+    assert data["agent_id"] == "agent-current"
+    assert client.find_by_aic_calls == ["1.2.STALE"]
+    assert client.find_by_name_version_calls == [("demo-agent", "1.0.0")]
 
 
 def test_check_prefers_local_aic_lookup(monkeypatch, tmp_path, empty_conf):
@@ -604,3 +754,36 @@ def test_sync_acs_updates_local_metadata(monkeypatch, tmp_path, empty_conf):
     assert updated["aic"] == "1.2.3"
     assert updated["active"] is True
     assert updated["lastModifiedTime"] == "2026-04-01T00:00:00+08:00"
+
+
+def test_sync_acs_does_not_rewrite_unchanged_file(monkeypatch, tmp_path, empty_conf):
+    runner = CliRunner()
+    client = StubClient()
+    acs = {
+        "name": "demo-agent",
+        "version": "1.0.0",
+        "aic": "1.2.3",
+        "active": True,
+        "lastModifiedTime": "2026-04-01T00:00:00+08:00",
+    }
+    client.find_by_aic_result = {
+        "id": "agent-1",
+        "name": "demo-agent",
+        "version": "1.0.0",
+        "approval_status": "APPROVED",
+        "aic": "1.2.3",
+    }
+    client.get_my_agent_result = {**client.find_by_aic_result, "acs": acs}
+    acs_path = tmp_path / "agent.json"
+    original = json.dumps(acs, ensure_ascii=False, indent=4) + "\n"
+    acs_path.write_text(original, encoding="utf-8")
+    monkeypatch.setattr("acps_cli.registry.unified.RegistryApiClient", lambda config: client)
+
+    result = runner.invoke(
+        main,
+        ["--config", str(empty_conf), "agent", "sync", "--acs-file", str(acs_path), "--json"],
+    )
+
+    assert result.exit_code == 0
+    assert json.loads(result.output)["status"] == "unchanged"
+    assert acs_path.read_text(encoding="utf-8") == original
